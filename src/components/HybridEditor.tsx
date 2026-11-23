@@ -1,4 +1,8 @@
 import {
+  type ChangeEvent,
+  type ClipboardEvent,
+  type DragEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -7,71 +11,36 @@ import {
   useState,
 } from "react";
 import {
-  AlertCircle,
-  AlertTriangle,
-  ArrowDown,
-  ArrowUp,
-  Check,
-  CheckSquare,
-  ChevronDown,
-  ChevronRight,
-  Code2,
-  Copy,
-  Download,
-  ExternalLink,
-  Eye,
-  FileCode2,
-  FileDown,
-  Flame,
-  GripVertical,
-  Hash,
-  Heading1,
-  History,
-  Indent,
-  Info,
-  Lightbulb,
-  List,
-  ListTree,
-  Maximize2,
-  Minimize2,
-  Minus,
-  Outdent,
-  Pencil,
-  PenLine,
-  Plus,
-  Quote,
-  Redo2,
-  Replace,
-  Save,
-  Search,
-  Sparkles,
-  Tag,
-  Trash2,
-  Undo2,
-  X,
-  ZoomIn,
+  AlertCircle, ArrowDown, ArrowUp, Check, ChevronDown, ChevronRight, Copy,
+  Download, Eye, FileCode2, FileDown, GripVertical, Hash, History, ImagePlus,
+  Indent, ListTree, Maximize2, Minimize2, Outdent, Pencil, PenLine, Plus,
+  Redo2, Save, Search, Tag, Trash2, Undo2, X, ZoomIn,
 } from "lucide-react";
 import { vaultApi } from "../api/bridge";
 import type {
-  BacklinkItem,
-  Block,
-  BlockLookup,
-  BlockType,
-  DocumentSummary,
-  DocumentWithBlocks,
-  SearchResult,
-  TaskStatus,
+  BacklinkItem, Block, BlockLookup, BlockType, DocumentSummary,
+  DocumentWithBlocks, SearchResult,
 } from "../types/vault";
-import {
-  type CalloutKind,
-  parseCalloutHeader,
-  parseInlineTokens,
-  renderDocumentToStandaloneHtml,
-  stripExplicitBlockIds,
-} from "../utils/markdownRich";
+import { renderDocumentToStandaloneHtml, stripExplicitBlockIds } from "../utils/markdownRich";
 import { BacklinksPanel } from "./BacklinksPanel";
 import { HistoryModal } from "./HistoryModal";
 import { OutlinePanel } from "./OutlinePanel";
+import { AutocompleteMenu } from "./editor/AutocompleteMenu";
+import { FindReplaceBar } from "./editor/FindReplaceBar";
+import { AssetImagePreview, PreviewBlock, TransclusionCard } from "./editor/PreviewBlock";
+import {
+  type AutocompleteMenuState, type BlockRefCandidate, type HoverDocPreview,
+  MAX_HISTORY, type PendingFocus, type SlashOption,
+  applyInlineInsertion, autoResizeTextarea, buildBlockRefCandidates,
+  buildHoverPreviewFromDoc, buildNextTaskPatch, buildSlashOptionPatch,
+  cloneBlocks, computeFindMatches, computeFocusRange,
+  computeVisibleBlockIndices, computeZoomState, createNewBlock,
+  detectAutocomplete, extractBlockRefs, extractImageEmbeds, fileToBase64,
+  filterSlashOptions, filterWikiDocs, getBlockTextareaClassName,
+  getClipboardImageFile, moveBlockInList, reorderBlockList,
+  replaceAllInBlocks, replaceAllOccurrences, replaceMatchInBlocks,
+  serializeBlocksToCleanMarkdown, slugifyFilename, triggerFileDownload,
+} from "./editor/editorHelpers";
 
 interface HybridEditorProps {
   docBundle: DocumentWithBlocks;
@@ -84,307 +53,21 @@ interface HybridEditorProps {
   onToggleZenMode?: () => void;
 }
 
-const MAX_HISTORY = 50;
-
-const SLASH_OPTIONS: Array<{
-  type: BlockType;
-  label: string;
-  headingLevel?: number;
-  keywords: string;
-  initialContent?: string;
-}> = [
-  {
-    type: "paragraph",
-    label: "Absatz (Text)",
-    keywords: "paragraph text absatz p",
-  },
-  {
-    type: "heading",
-    label: "Überschrift H1",
-    headingLevel: 1,
-    keywords: "heading h1 titel ueberschrift überschrift",
-  },
-  {
-    type: "heading",
-    label: "Überschrift H2",
-    headingLevel: 2,
-    keywords: "heading h2 ueberschrift überschrift",
-  },
-  {
-    type: "heading",
-    label: "Überschrift H3",
-    headingLevel: 3,
-    keywords: "heading h3 ueberschrift überschrift",
-  },
-  {
-    type: "listItem",
-    label: "Listenpunkt (Outliner)",
-    keywords: "list bullet punkt outliner ul li",
-  },
-  {
-    type: "taskItem",
-    label: "Aufgabe (TODO Checkbox)",
-    keywords: "task todo checkbox aufgabe check",
-  },
-  {
-    type: "callout",
-    label: "Callout Box",
-    keywords: "callout note tip warning info hinweis box",
-    initialContent: "[!NOTE] Hinweis\n",
-  },
-  {
-    type: "quote",
-    label: "Zitat",
-    keywords: "quote zitat blockquote",
-  },
-  {
-    type: "codeBlock",
-    label: "Code-Block",
-    keywords: "code snippet block pre",
-  },
-  {
-    type: "divider",
-    label: "Trennlinie",
-    keywords: "divider hr trennlinie line",
-  },
-];
-
-type AutocompleteMenu =
-  | {
-      kind: "slash";
-      blockId: string;
-      query: string;
-      triggerStart: number;
-      triggerEnd: number;
-    }
-  | {
-      kind: "wiki";
-      blockId: string;
-      query: string;
-      triggerStart: number;
-      triggerEnd: number;
-    }
-  | {
-      kind: "blockRef";
-      blockId: string;
-      query: string;
-      triggerStart: number;
-      triggerEnd: number;
-    };
-
-interface BlockRefCandidate {
-  blockId: string;
-  docTitle: string;
-  docPath: string;
-  preview: string;
-  isLocal: boolean;
-}
-
-interface PendingFocus {
-  blockId: string;
-  position: "start" | "end" | number;
-  selectionEnd?: number;
-}
-
-interface HoverDocPreview {
-  title: string;
-  path: string;
-  snippet: string;
-  tags: string[];
-}
-
-interface FindMatch {
-  blockId?: string;
-  blockIndex?: number;
-  start: number;
-  end: number;
-}
-
-function cloneBlocks(list: Block[]): Block[] {
-  return list.map((b) => ({
-    ...b,
-    properties: { ...b.properties },
-    tags: [...b.tags],
-    task: b.task ? { ...b.task } : null,
-  }));
-}
-
-function autoResizeTextarea(el: HTMLTextAreaElement | null): void {
-  if (!el) return;
-  el.style.height = "auto";
-  el.style.height = `${Math.max(el.scrollHeight, 24)}px`;
-}
-
-function extractBlockRefs(raw: string): string[] {
-  const out: string[] = [];
-  const regex = /\(\(([a-zA-Z0-9_-]+)\)\)/g;
-  let match: RegExpExecArray | null;
-  while ((match = regex.exec(raw)) !== null) {
-    out.push(match[1]);
-  }
-  return out;
-}
-
-function findMatchesInText(
-  text: string,
-  query: string,
-  caseSensitive: boolean,
-): Array<{ start: number; end: number }> {
-  if (!query) return [];
-  const haystack = caseSensitive ? text : text.toLowerCase();
-  const needle = caseSensitive ? query : query.toLowerCase();
-  const out: Array<{ start: number; end: number }> = [];
-  let idx = 0;
-  while (idx <= haystack.length - needle.length) {
-    const found = haystack.indexOf(needle, idx);
-    if (found === -1) break;
-    out.push({ start: found, end: found + needle.length });
-    idx = found + Math.max(1, needle.length);
-  }
-  return out;
-}
-
-function replaceAllOccurrences(
-  text: string,
-  query: string,
-  replacement: string,
-  caseSensitive: boolean,
-): string {
-  if (!query) return text;
-  const matches = findMatchesInText(text, query, caseSensitive);
-  if (matches.length === 0) return text;
-  let result = "";
-  let cursor = 0;
-  for (const m of matches) {
-    result += text.slice(cursor, m.start) + replacement;
-    cursor = m.end;
-  }
-  result += text.slice(cursor);
-  return result;
-}
-
-function serializeBlocksToCleanMarkdown(
-  blocks: Block[],
-  frontmatter: Record<string, unknown>,
-): string {
-  const fmEntries = Object.entries(frontmatter).filter(
-    ([, v]) => v !== undefined && v !== null && String(v).trim() !== "",
-  );
-  const parts: string[] = [];
-
-  if (fmEntries.length > 0) {
-    const fmLines = fmEntries.map(([k, v]) => {
-      if (Array.isArray(v)) {
-        return `${k}: [${v.map((x) => String(x)).join(", ")}]`;
-      }
-      return `${k}: ${String(v)}`;
-    });
-    parts.push(`---\n${fmLines.join("\n")}\n---`);
-  }
-
-  for (const blk of blocks) {
-    const indent = "  ".repeat(Math.max(0, blk.depth));
-    const clean = stripExplicitBlockIds(blk.rawContent);
-
-    switch (blk.blockType) {
-      case "divider":
-        parts.push("---");
-        break;
-      case "heading": {
-        const hashes = "#".repeat(Math.min(6, Math.max(1, blk.headingLevel ?? 2)));
-        parts.push(`${hashes} ${clean}`);
-        break;
-      }
-      case "listItem":
-        parts.push(`${indent}- ${clean}`);
-        break;
-      case "taskItem": {
-        const st = blk.task?.status ?? "TODO";
-        const box = st === "DONE" ? "x" : st === "DOING" ? "/" : st === "CANCELED" ? "-" : " ";
-        parts.push(`${indent}- [${box}] ${clean}`);
-        break;
-      }
-      case "codeBlock": {
-        const lang = blk.codeLang ?? "";
-        parts.push(`\`\`\`${lang}\n${clean}\n\`\`\``);
-        break;
-      }
-      case "quote":
-        parts.push(
-          clean
-            .split("\n")
-            .map((line) => `${indent}> ${line}`)
-            .join("\n"),
-        );
-        break;
-      case "callout":
-        parts.push(
-          clean
-            .split("\n")
-            .map((line) =>
-              line.trimStart().startsWith(">")
-                ? `${indent}${line}`
-                : `${indent}> ${line}`,
-            )
-            .join("\n"),
-        );
-        break;
-      case "paragraph":
-      default:
-        parts.push(`${indent}${clean}`);
-        break;
-    }
-  }
-
-  return `${parts.join("\n\n")}\n`;
-}
-
-function triggerFileDownload(
-  filename: string,
-  content: string,
-  mimeType: string,
-): void {
-  const blob = new Blob([content], { type: mimeType });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-}
-
-function slugifyFilename(titleOrPath: string): string {
-  const base = titleOrPath.replace(/\.md$/i, "").split("/").pop() || "dokument";
-  const cleaned = base.replace(/[\\/:*?"<>|]/g, "-").trim();
-  return cleaned || "dokument";
-}
-
 export function HybridEditor({
-  docBundle,
-  allDocuments,
-  onSaved,
-  onNavigate,
-  onDeleteDocument,
-  onRenameDocument,
-  isZenMode,
-  onToggleZenMode,
+  docBundle, allDocuments, onSaved, onNavigate,
+  onDeleteDocument, onRenameDocument, isZenMode, onToggleZenMode,
 }: HybridEditorProps) {
   const [mode, setMode] = useState<"hybrid" | "preview" | "raw">("hybrid");
   const [blocks, setBlocks] = useState<Block[]>(docBundle.blocks);
   const [rawMarkdown, setRawMarkdown] = useState(docBundle.rawMarkdown);
   const [backlinks, setBacklinks] = useState<BacklinkItem[]>([]);
-  const [transclusions, setTransclusions] = useState<
-    Record<string, BlockLookup>
-  >({});
+  const [transclusions, setTransclusions] = useState<Record<string, BlockLookup>>({});
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [autoSave, setAutoSave] = useState(true);
   const [editorError, setEditorError] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
-  // Undo / Redo history
   const [undoStack, setUndoStack] = useState<Block[][]>([]);
   const [redoStack, setRedoStack] = useState<Block[][]>([]);
   const blocksRef = useRef<Block[]>(docBundle.blocks);
@@ -392,19 +75,18 @@ export function HybridEditor({
   const lastEditMetaRef = useRef<{ blockId: string; ts: number } | null>(null);
   const lastDocIdRef = useRef<string>(docBundle.document.id);
 
-  // Autocomplete menus (`/`, `[[`, `((`)
-  const [menu, setMenu] = useState<AutocompleteMenu | null>(null);
+  const [menu, setMenu] = useState<AutocompleteMenuState | null>(null);
   const [menuIndex, setMenuIndex] = useState(0);
   const [remoteBlockRefs, setRemoteBlockRefs] = useState<SearchResult[]>([]);
 
-  // Block Zoom (Hoisting)
   const [zoomBlockId, setZoomBlockId] = useState<string | null>(null);
-
-  // Drag & Drop state
   const [dragBlockId, setDragBlockId] = useState<string | null>(null);
   const [dragOverBlockId, setDragOverBlockId] = useState<string | null>(null);
 
-  // Find & Replace
+  const [uploadingImage, setUploadingImage] = useState(false);
+  const [isDraggingImageFile, setIsDraggingImageFile] = useState(false);
+  const imageInputRef = useRef<HTMLInputElement | null>(null);
+
   const [findOpen, setFindOpen] = useState(false);
   const [findQuery, setFindQuery] = useState("");
   const [replaceQuery, setReplaceQuery] = useState("");
@@ -412,41 +94,31 @@ export function HybridEditor({
   const [activeMatchIdx, setActiveMatchIdx] = useState(0);
   const findInputRef = useRef<HTMLInputElement | null>(null);
 
-  // Side panels & modals & Zen fallback
   const [showOutline, setShowOutline] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [localZenMode, setLocalZenMode] = useState(false);
   const [activeBlockId, setActiveBlockId] = useState<string | null>(null);
 
-  // Frontmatter & rename
   const [newPropKey, setNewPropKey] = useState("");
   const [newPropVal, setNewPropVal] = useState("");
-  const [frontmatter, setFrontmatter] = useState<Record<string, unknown>>(
-    docBundle.document.frontmatter,
-  );
+  const [frontmatter, setFrontmatter] = useState<Record<string, unknown>>(docBundle.document.frontmatter);
   const [renaming, setRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState(docBundle.document.path);
   const [pendingFocus, setPendingFocus] = useState<PendingFocus | null>(null);
 
   const blockRefs = useRef<Record<string, HTMLTextAreaElement | null>>({});
   const blockWrapperRefs = useRef<Record<string, HTMLDivElement | null>>({});
-  const hoverDocCacheRef = useRef<
-    Record<string, HoverDocPreview | "not_found">
-  >({});
+  const hoverDocCacheRef = useRef<Record<string, HoverDocPreview | "not_found">>({});
 
   const effectiveZenMode = isZenMode ?? localZenMode;
   const handleToggleZen = useCallback(() => {
-    if (onToggleZenMode) {
-      onToggleZenMode();
-    } else {
-      setLocalZenMode((v) => !v);
-    }
+    if (onToggleZenMode) onToggleZenMode();
+    else setLocalZenMode((v) => !v);
   }, [onToggleZenMode]);
 
   const loadBacklinks = useCallback(async (docId: string) => {
     try {
-      const items = await vaultApi.getBacklinks(docId);
-      setBacklinks(items);
+      setBacklinks(await vaultApi.getBacklinks(docId));
     } catch {
       setBacklinks([]);
     }
@@ -456,7 +128,6 @@ export function HybridEditor({
   useEffect(() => {
     const isNewDocument = lastDocIdRef.current !== docBundle.document.id;
     lastDocIdRef.current = docBundle.document.id;
-
     setBlocks(docBundle.blocks);
     blocksRef.current = docBundle.blocks;
     setRawMarkdown(docBundle.rawMarkdown);
@@ -477,68 +148,45 @@ export function HybridEditor({
       setDragBlockId(null);
       setDragOverBlockId(null);
     } else {
-      // Keep zoom only if zoomed block still exists
       setZoomBlockId((curr) =>
         curr && docBundle.blocks.some((b) => b.id === curr) ? curr : null,
       );
     }
-
     void loadBacklinks(docBundle.document.id);
   }, [docBundle, loadBacklinks]);
 
-  // Auto-resize all visible block textareas cleanly on render/updates
+  // Auto-resize all visible block textareas on render/updates
   useLayoutEffect(() => {
     if (mode !== "hybrid") return;
-    for (const el of Object.values(blockRefs.current)) {
-      autoResizeTextarea(el);
-    }
+    for (const el of Object.values(blockRefs.current)) autoResizeTextarea(el);
   }, [blocks, mode, zoomBlockId, showOutline, effectiveZenMode]);
 
-  // Focus newly inserted or targeted block textarea cleanly
+  // Focus newly inserted or targeted block textarea
   useEffect(() => {
     if (!pendingFocus) return;
     const el = blockRefs.current[pendingFocus.blockId];
-    if (el) {
-      el.focus();
-      const len = el.value.length;
-      const start =
-        pendingFocus.position === "start"
-          ? 0
-          : pendingFocus.position === "end"
-            ? len
-            : Math.min(len, Math.max(0, pendingFocus.position));
-      const end =
-        pendingFocus.selectionEnd !== undefined
-          ? Math.min(len, Math.max(start, pendingFocus.selectionEnd))
-          : start;
-      el.setSelectionRange(start, end);
-      el.scrollIntoView({ block: "nearest", behavior: "smooth" });
-      setActiveBlockId(pendingFocus.blockId);
-      setPendingFocus(null);
-    }
+    if (!el) return;
+    el.focus();
+    const { start, end } = computeFocusRange(el.value.length, pendingFocus);
+    el.setSelectionRange(start, end);
+    el.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    setActiveBlockId(pendingFocus.blockId);
+    setPendingFocus(null);
   }, [blocks, pendingFocus, zoomBlockId, mode]);
 
-  // Resolve `((block-id))` references inside blocks for live transclusion rendering
+  // Resolve `((block-id))` references inside blocks for live transclusion
   useEffect(() => {
     const refIds = new Set<string>();
-    const regex = /\(\(([a-zA-Z0-9_-]+)\)\)/g;
     for (const blk of blocks) {
-      let match: RegExpExecArray | null;
-      while ((match = regex.exec(blk.rawContent)) !== null) {
-        refIds.add(match[1]);
-      }
+      for (const refId of extractBlockRefs(blk.rawContent)) refIds.add(refId);
     }
     if (refIds.size === 0) {
       setTransclusions({});
       return;
     }
-
     let cancelled = false;
     Promise.all(
-      Array.from(refIds).map(async (id) => {
-        const res = await vaultApi.getBlockById(id).catch(() => null);
-        return [id, res] as const;
-      }),
+      Array.from(refIds).map(async (id) => [id, await vaultApi.getBlockById(id).catch(() => null)] as const),
     ).then((entries) => {
       if (cancelled) return;
       const map: Record<string, BlockLookup> = {};
@@ -547,46 +195,28 @@ export function HybridEditor({
       }
       setTransclusions(map);
     });
-
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, [blocks]);
 
   // Fetch cross-vault block candidates when `((` autocomplete has a query
   useEffect(() => {
-    if (!menu || menu.kind !== "blockRef") {
-      setRemoteBlockRefs([]);
-      return;
-    }
-    const q = menu.query.trim();
-    if (q.length < 2) {
+    if (!menu || menu.kind !== "blockRef" || menu.query.trim().length < 2) {
       setRemoteBlockRefs([]);
       return;
     }
     let cancelled = false;
+    const q = menu.query.trim();
     const timer = window.setTimeout(() => {
-      vaultApi
-        .searchVault(q, 10)
-        .then((res) => {
-          if (!cancelled) setRemoteBlockRefs(res.results);
-        })
-        .catch(() => {
-          if (!cancelled) setRemoteBlockRefs([]);
-        });
+      vaultApi.searchVault(q, 10)
+        .then((res) => { if (!cancelled) setRemoteBlockRefs(res.results); })
+        .catch(() => { if (!cancelled) setRemoteBlockRefs([]); });
     }, 150);
-    return () => {
-      cancelled = true;
-      window.clearTimeout(timer);
-    };
+    return () => { cancelled = true; window.clearTimeout(timer); };
   }, [menu]);
 
-  // Commit block mutations with bounded Undo/Redo history
+  // Bounded Undo/Redo block commit
   const commitBlocks = useCallback(
-    (
-      nextBlocks: Block[],
-      options?: { coalesceBlockId?: string; skipHistory?: boolean },
-    ) => {
+    (nextBlocks: Block[], options?: { coalesceBlockId?: string; skipHistory?: boolean }) => {
       const prev = blocksRef.current;
       if (!options?.skipHistory) {
         const now = Date.now();
@@ -594,7 +224,6 @@ export function HybridEditor({
           Boolean(options?.coalesceBlockId) &&
           lastEditMetaRef.current?.blockId === options?.coalesceBlockId &&
           now - (lastEditMetaRef.current?.ts ?? 0) < 600;
-
         if (!canCoalesce) {
           const snapshot = cloneBlocks(prev);
           setUndoStack((stack) => [...stack.slice(-(MAX_HISTORY - 1)), snapshot]);
@@ -604,7 +233,6 @@ export function HybridEditor({
           ? { blockId: options.coalesceBlockId, ts: now }
           : null;
       }
-
       blocksRef.current = nextBlocks;
       setBlocks(nextBlocks);
       setDirty(true);
@@ -617,10 +245,7 @@ export function HybridEditor({
       if (prevUndo.length === 0) return prevUndo;
       const previousState = prevUndo[prevUndo.length - 1];
       const currentSnapshot = cloneBlocks(blocksRef.current);
-      setRedoStack((prevRedo) => [
-        ...prevRedo.slice(-(MAX_HISTORY - 1)),
-        currentSnapshot,
-      ]);
+      setRedoStack((prevRedo) => [...prevRedo.slice(-(MAX_HISTORY - 1)), currentSnapshot]);
       blocksRef.current = previousState;
       setBlocks(previousState);
       setDirty(true);
@@ -635,10 +260,7 @@ export function HybridEditor({
       if (prevRedo.length === 0) return prevRedo;
       const nextState = prevRedo[prevRedo.length - 1];
       const currentSnapshot = cloneBlocks(blocksRef.current);
-      setUndoStack((prevUndo) => [
-        ...prevUndo.slice(-(MAX_HISTORY - 1)),
-        currentSnapshot,
-      ]);
+      setUndoStack((prevUndo) => [...prevUndo.slice(-(MAX_HISTORY - 1)), currentSnapshot]);
       blocksRef.current = nextState;
       setBlocks(nextState);
       setDirty(true);
@@ -654,10 +276,7 @@ export function HybridEditor({
     try {
       const updated =
         mode === "raw"
-          ? await vaultApi.saveMarkdownDocument(
-              docBundle.document.path,
-              rawMarkdown,
-            )
+          ? await vaultApi.saveMarkdownDocument(docBundle.document.path, rawMarkdown)
           : await vaultApi.saveDocumentBlocks(
               docBundle.document.path,
               { ...docBundle.document, frontmatter },
@@ -666,9 +285,7 @@ export function HybridEditor({
       setDirty(false);
       await onSaved(updated);
     } catch (err) {
-      setEditorError(
-        err instanceof Error ? err.message : "Speichern fehlgeschlagen.",
-      );
+      setEditorError(err instanceof Error ? err.message : "Speichern fehlgeschlagen.");
     } finally {
       setSaving(false);
     }
@@ -677,42 +294,25 @@ export function HybridEditor({
   // Global keyboard shortcuts: Ctrl+S, Ctrl+F, Ctrl+Z, Ctrl+Shift+Z / Ctrl+Y
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      const mod = e.ctrlKey || e.metaKey;
-      if (!mod) return;
+      if (!(e.ctrlKey || e.metaKey)) return;
       const key = e.key.toLowerCase();
-
       if (key === "s") {
         e.preventDefault();
-        if (!saving) {
-          void handleSave();
-        }
-        return;
-      }
-
-      if (key === "f") {
+        if (!saving) void handleSave();
+      } else if (key === "f") {
         e.preventDefault();
         setFindOpen(true);
         window.requestAnimationFrame(() => {
           findInputRef.current?.focus();
           findInputRef.current?.select();
         });
-        return;
-      }
-
-      if (mode !== "raw") {
-        const target = e.target as HTMLElement | null;
-        const isPlainInput = target?.tagName === "INPUT";
-        if (!isPlainInput) {
-          if (key === "z" && !e.shiftKey) {
-            e.preventDefault();
-            handleUndo();
-            return;
-          }
-          if ((key === "z" && e.shiftKey) || key === "y") {
-            e.preventDefault();
-            handleRedo();
-            return;
-          }
+      } else if (mode !== "raw" && (e.target as HTMLElement | null)?.tagName !== "INPUT") {
+        if (key === "z" && !e.shiftKey) {
+          e.preventDefault();
+          handleUndo();
+        } else if ((key === "z" && e.shiftKey) || key === "y") {
+          e.preventDefault();
+          handleRedo();
         }
       }
     };
@@ -720,318 +320,87 @@ export function HybridEditor({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [handleRedo, handleSave, handleUndo, mode, saving]);
 
-  // Debounced Auto-Save (1.5s after last edit)
+  // Debounced Auto-Save (1.5s) & beforeunload protection
   useEffect(() => {
     if (!autoSave || !dirty || saving) return;
-    const timer = window.setTimeout(() => {
-      void handleSave();
-    }, 1500);
+    const timer = window.setTimeout(() => void handleSave(), 1500);
     return () => window.clearTimeout(timer);
   }, [autoSave, dirty, saving, handleSave]);
 
-  // Warn before closing window/tab when unsaved changes exist
   useEffect(() => {
     if (!dirty) return;
-    const onBeforeUnload = (e: BeforeUnloadEvent) => {
-      e.preventDefault();
-      e.returnValue = "";
-    };
+    const onBeforeUnload = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ""; };
     window.addEventListener("beforeunload", onBeforeUnload);
     return () => window.removeEventListener("beforeunload", onBeforeUnload);
   }, [dirty]);
 
-  // Compute Block Zoom slice & Breadcrumbs
-  const zoomState = useMemo(() => {
-    if (!zoomBlockId) {
-      return {
-        isZoomed: false,
-        rootDepth: 0,
-        startIdx: 0,
-        endIdx: blocks.length - 1,
-        breadcrumbs: [] as Block[],
-      };
-    }
-    const idx = blocks.findIndex((b) => b.id === zoomBlockId);
-    if (idx === -1) {
-      return {
-        isZoomed: false,
-        rootDepth: 0,
-        startIdx: 0,
-        endIdx: blocks.length - 1,
-        breadcrumbs: [] as Block[],
-      };
-    }
-    const rootDepth = blocks[idx].depth;
-    let endIdx = idx;
-    for (let j = idx + 1; j < blocks.length; j++) {
-      if (blocks[j].depth > rootDepth) {
-        endIdx = j;
-      } else {
-        break;
-      }
-    }
-
-    const ancestors: Block[] = [];
-    let minDepth = rootDepth;
-    for (let i = idx - 1; i >= 0; i--) {
-      if (blocks[i].depth < minDepth) {
-        ancestors.unshift(blocks[i]);
-        minDepth = blocks[i].depth;
-      }
-    }
-    ancestors.push(blocks[idx]);
-
-    return {
-      isZoomed: true,
-      rootDepth,
-      startIdx: idx,
-      endIdx,
-      breadcrumbs: ancestors,
-    };
-  }, [blocks, zoomBlockId]);
-
-  // Determine hidden collapsed children
-  const isBlockHiddenByCollapse = useCallback(
-    (index: number): boolean => {
-      const minBound = zoomState.isZoomed ? zoomState.startIdx : 0;
-      const currentDepth = blocks[index].depth;
-      for (let i = index - 1; i >= minBound; i--) {
-        if (blocks[i].depth < currentDepth) {
-          if (blocks[i].collapsed) return true;
-          return isBlockHiddenByCollapse(i);
-        }
-      }
-      return false;
-    },
-    [blocks, zoomState.isZoomed, zoomState.startIdx],
+  // Derived zoom, visibility, autocomplete & search memos
+  const zoomState = useMemo(() => computeZoomState(blocks, zoomBlockId), [blocks, zoomBlockId]);
+  const visibleIndices = useMemo(
+    () => computeVisibleBlockIndices(blocks, zoomState, mode),
+    [blocks, zoomState, mode],
+  );
+  const filteredSlashOptions = useMemo(() => filterSlashOptions(menu), [menu]);
+  const filteredWikiDocs = useMemo(() => filterWikiDocs(menu, allDocuments), [allDocuments, menu]);
+  const filteredBlockRefs = useMemo(
+    () => buildBlockRefCandidates(menu, blocks, docBundle.document.title, docBundle.document.path, remoteBlockRefs),
+    [blocks, docBundle.document.path, docBundle.document.title, menu, remoteBlockRefs],
   );
 
-  // Visible block indices respecting zoom & collapse
-  const visibleIndices = useMemo(() => {
-    const out: number[] = [];
-    if (blocks.length === 0) return out;
-    const start = zoomState.isZoomed ? zoomState.startIdx : 0;
-    const end = zoomState.isZoomed ? zoomState.endIdx : blocks.length - 1;
-    for (let i = start; i <= end; i++) {
-      if (mode === "hybrid" && isBlockHiddenByCollapse(i)) continue;
-      out.push(i);
-    }
-    return out;
-  }, [
-    blocks.length,
-    isBlockHiddenByCollapse,
-    mode,
-    zoomState.endIdx,
-    zoomState.isZoomed,
-    zoomState.startIdx,
-  ]);
-
-  // Filtered autocomplete options for active menu
-  const filteredSlashOptions = useMemo(() => {
-    if (!menu || menu.kind !== "slash") return [];
-    const q = menu.query.trim().toLowerCase();
-    if (!q) return SLASH_OPTIONS;
-    return SLASH_OPTIONS.filter(
-      (opt) =>
-        opt.label.toLowerCase().includes(q) ||
-        opt.type.toLowerCase().includes(q) ||
-        opt.keywords.includes(q),
-    );
-  }, [menu]);
-
-  const filteredWikiDocs = useMemo(() => {
-    if (!menu || menu.kind !== "wiki") return [];
-    const q = menu.query.trim().toLowerCase();
-    const matched = q
-      ? allDocuments.filter(
-          (d) =>
-            d.title.toLowerCase().includes(q) ||
-            d.path.toLowerCase().includes(q),
-        )
-      : allDocuments;
-    return matched.slice(0, 15);
-  }, [allDocuments, menu]);
-
-  const filteredBlockRefs = useMemo<BlockRefCandidate[]>(() => {
-    if (!menu || menu.kind !== "blockRef") return [];
-    const q = menu.query.trim().toLowerCase();
-    const seen = new Set<string>();
-    const items: BlockRefCandidate[] = [];
-
-    for (const b of blocks) {
-      if (b.blockType === "divider" || b.id === menu.blockId) continue;
-      const preview = stripExplicitBlockIds(b.plainText || b.rawContent).trim();
-      if (!preview && !b.hasExplicitId) continue;
-      const matches =
-        !q ||
-        b.id.toLowerCase().includes(q) ||
-        preview.toLowerCase().includes(q);
-      if (matches) {
-        seen.add(b.id);
-        items.push({
-          blockId: b.id,
-          docTitle: docBundle.document.title,
-          docPath: docBundle.document.path,
-          preview: preview || "(Leerer Block)",
-          isLocal: true,
-        });
-      }
-    }
-
-    for (const r of remoteBlockRefs) {
-      if (seen.has(r.blockId)) continue;
-      seen.add(r.blockId);
-      items.push({
-        blockId: r.blockId,
-        docTitle: r.docTitle,
-        docPath: r.docPath,
-        preview: r.plainText || r.snippet,
-        isLocal: false,
-      });
-    }
-
-    return items.slice(0, 15);
-  }, [
-    blocks,
-    docBundle.document.path,
-    docBundle.document.title,
-    menu,
-    remoteBlockRefs,
-  ]);
-
-  // Clamp menu selection index when filtered list shrinks
   const activeMenuCount =
-    menu?.kind === "slash"
-      ? filteredSlashOptions.length
-      : menu?.kind === "wiki"
-        ? filteredWikiDocs.length
-        : menu?.kind === "blockRef"
-          ? filteredBlockRefs.length
-          : 0;
+    menu?.kind === "slash" ? filteredSlashOptions.length
+      : menu?.kind === "wiki" ? filteredWikiDocs.length
+        : menu?.kind === "blockRef" ? filteredBlockRefs.length : 0;
+
+  useEffect(() => { setMenuIndex(0); }, [menu?.kind, menu?.blockId, menu?.query]);
+
+  const findMatches = useMemo(
+    () => computeFindMatches(findOpen, findQuery, mode, rawMarkdown, blocks, findCaseSensitive),
+    [blocks, findCaseSensitive, findOpen, findQuery, mode, rawMarkdown],
+  );
 
   useEffect(() => {
-    setMenuIndex(0);
-  }, [menu?.kind, menu?.blockId, menu?.query]);
-
-  // Find & Replace matches
-  const findMatches = useMemo<FindMatch[]>(() => {
-    const q = findQuery;
-    if (!findOpen || !q) return [];
-    if (mode === "raw") {
-      return findMatchesInText(rawMarkdown, q, findCaseSensitive);
-    }
-    const list: FindMatch[] = [];
-    blocks.forEach((b, blockIndex) => {
-      if (b.blockType === "divider") return;
-      const inBlk = findMatchesInText(b.rawContent, q, findCaseSensitive);
-      for (const m of inBlk) {
-        list.push({
-          blockId: b.id,
-          blockIndex,
-          start: m.start,
-          end: m.end,
-        });
-      }
-    });
-    return list;
-  }, [blocks, findCaseSensitive, findOpen, findQuery, mode, rawMarkdown]);
-
-  useEffect(() => {
-    if (findMatches.length === 0) {
-      setActiveMatchIdx(0);
-    } else if (activeMatchIdx >= findMatches.length) {
-      setActiveMatchIdx(0);
-    }
+    if (findMatches.length === 0 || activeMatchIdx >= findMatches.length) setActiveMatchIdx(0);
   }, [activeMatchIdx, findMatches.length]);
 
-  const jumpToMatch = useCallback(
-    (idx: number) => {
-      if (findMatches.length === 0) return;
-      const safeIdx =
-        ((idx % findMatches.length) + findMatches.length) % findMatches.length;
-      setActiveMatchIdx(safeIdx);
-      const match = findMatches[safeIdx];
-      if (match.blockId) {
-        if (
-          zoomBlockId &&
-          match.blockIndex !== undefined &&
-          (match.blockIndex < zoomState.startIdx ||
-            match.blockIndex > zoomState.endIdx)
-        ) {
-          setZoomBlockId(null);
-        }
-        if (mode === "hybrid") {
-          setPendingFocus({
-            blockId: match.blockId,
-            position: match.start,
-            selectionEnd: match.end,
-          });
-        } else {
-          blockWrapperRefs.current[match.blockId]?.scrollIntoView({
-            block: "center",
-            behavior: "smooth",
-          });
-        }
-      }
-    },
-    [
-      findMatches,
-      mode,
-      zoomBlockId,
-      zoomState.endIdx,
-      zoomState.startIdx,
-    ],
-  );
+  const jumpToMatch = useCallback((idx: number) => {
+    if (findMatches.length === 0) return;
+    const safeIdx = ((idx % findMatches.length) + findMatches.length) % findMatches.length;
+    setActiveMatchIdx(safeIdx);
+    const match = findMatches[safeIdx];
+    if (!match.blockId) return;
+    if (
+      zoomBlockId && match.blockIndex !== undefined &&
+      (match.blockIndex < zoomState.startIdx || match.blockIndex > zoomState.endIdx)
+    ) {
+      setZoomBlockId(null);
+    }
+    if (mode === "hybrid") {
+      setPendingFocus({ blockId: match.blockId, position: match.start, selectionEnd: match.end });
+    } else {
+      blockWrapperRefs.current[match.blockId]?.scrollIntoView({ block: "center", behavior: "smooth" });
+    }
+  }, [findMatches, mode, zoomBlockId, zoomState.endIdx, zoomState.startIdx]);
 
   const handleReplaceCurrent = () => {
     if (!findQuery || findMatches.length === 0) return;
     const match = findMatches[activeMatchIdx] ?? findMatches[0];
     if (mode === "raw") {
-      const next =
-        rawMarkdown.slice(0, match.start) +
-        replaceQuery +
-        rawMarkdown.slice(match.end);
-      setRawMarkdown(next);
+      setRawMarkdown(rawMarkdown.slice(0, match.start) + replaceQuery + rawMarkdown.slice(match.end));
       setDirty(true);
-      return;
+    } else if (match.blockId) {
+      commitBlocks(replaceMatchInBlocks(blocksRef.current, match, replaceQuery));
     }
-    if (!match.blockId) return;
-    const nextBlocks = blocksRef.current.map((b) => {
-      if (b.id !== match.blockId) return b;
-      const updatedText =
-        b.rawContent.slice(0, match.start) +
-        replaceQuery +
-        b.rawContent.slice(match.end);
-      return { ...b, rawContent: updatedText, plainText: updatedText };
-    });
-    commitBlocks(nextBlocks);
   };
 
   const handleReplaceAll = () => {
     if (!findQuery || findMatches.length === 0) return;
     if (mode === "raw") {
-      const next = replaceAllOccurrences(
-        rawMarkdown,
-        findQuery,
-        replaceQuery,
-        findCaseSensitive,
-      );
-      setRawMarkdown(next);
+      setRawMarkdown(replaceAllOccurrences(rawMarkdown, findQuery, replaceQuery, findCaseSensitive));
       setDirty(true);
-      return;
+    } else {
+      commitBlocks(replaceAllInBlocks(blocksRef.current, findQuery, replaceQuery, findCaseSensitive));
     }
-    const nextBlocks = blocksRef.current.map((b) => {
-      if (b.blockType === "divider") return b;
-      const updatedText = replaceAllOccurrences(
-        b.rawContent,
-        findQuery,
-        replaceQuery,
-        findCaseSensitive,
-      );
-      if (updatedText === b.rawContent) return b;
-      return { ...b, rawContent: updatedText, plainText: updatedText };
-    });
-    commitBlocks(nextBlocks);
   };
 
   const handleConfirmRename = async () => {
@@ -1043,181 +412,171 @@ export function HybridEditor({
     }
     setEditorError(null);
     try {
-      if (dirty) {
-        await handleSave();
-      }
+      if (dirty) await handleSave();
       await onRenameDocument(docBundle.document.path, target);
       setRenaming(false);
     } catch (err) {
-      setEditorError(
-        err instanceof Error ? err.message : "Umbenennen fehlgeschlagen.",
-      );
+      setEditorError(err instanceof Error ? err.message : "Umbenennen fehlgeschlagen.");
     }
   };
 
   const updateBlock = useCallback(
-    (
-      blockId: string,
-      patch: Partial<Block>,
-      options?: { coalesceBlockId?: string; skipHistory?: boolean },
-    ) => {
-      const next = blocksRef.current.map((b) =>
-        b.id === blockId ? { ...b, ...patch } : b,
+    (blockId: string, patch: Partial<Block>, options?: { coalesceBlockId?: string; skipHistory?: boolean }) => {
+      commitBlocks(
+        blocksRef.current.map((b) => (b.id === blockId ? { ...b, ...patch } : b)),
+        options,
       );
-      commitBlocks(next, options);
     },
     [commitBlocks],
   );
 
-  const detectAutocomplete = (
-    blockId: string,
-    value: string,
-    cursorPos: number,
-  ): AutocompleteMenu | null => {
-    const before = value.slice(0, cursorPos);
-
-    // 1. Slash command at start of block (single token)
-    if (value.startsWith("/") && !before.includes("\n") && !before.includes(" ")) {
-      return {
-        kind: "slash",
-        blockId,
-        query: before.slice(1),
-        triggerStart: 0,
-        triggerEnd: value.length,
-      };
+  // Image Upload, Paste & Drop (#34)
+  const uploadImageFile = useCallback(async (file: File): Promise<string | null> => {
+    setUploadingImage(true);
+    setEditorError(null);
+    try {
+      const base64 = await fileToBase64(file);
+      return await vaultApi.saveAsset(file.name?.trim() || "pasted.png", base64);
+    } catch (err) {
+      setEditorError(err instanceof Error ? err.message : "Bild-Upload fehlgeschlagen.");
+      return null;
+    } finally {
+      setUploadingImage(false);
     }
+  }, []);
 
-    // 2. Wiki-link `[[query` before cursor
-    const wikiMatch = /\[\[([^\]\n]*)$/.exec(before);
-    if (wikiMatch) {
-      return {
-        kind: "wiki",
-        blockId,
-        query: wikiMatch[1],
-        triggerStart: wikiMatch.index,
-        triggerEnd: cursorPos,
-      };
+  const insertImageBlock = useCallback(
+    (relPath: string) => {
+      const embed = `![[${relPath}]]`;
+      if (mode === "raw") {
+        setRawMarkdown((prev) =>
+          prev.trim().length > 0 ? `${prev.trimEnd()}\n\n${embed}\n` : `${embed}\n`,
+        );
+        setDirty(true);
+        return;
+      }
+      const current = blocksRef.current;
+      const activeIdx = activeBlockId ? current.findIndex((b) => b.id === activeBlockId) : -1;
+      const afterIdx = activeIdx >= 0 ? activeIdx : zoomState.isZoomed ? zoomState.endIdx : current.length - 1;
+      const depth = activeIdx >= 0 ? current[activeIdx].depth : zoomState.isZoomed ? zoomState.rootDepth + 1 : 0;
+      const newBlock = createNewBlock(docBundle.document.id, afterIdx, depth, "paragraph", embed);
+      const next = [...current];
+      next.splice(afterIdx + 1, 0, newBlock);
+      commitBlocks(next);
+      if (mode === "hybrid") setPendingFocus({ blockId: newBlock.id, position: "end" });
+    },
+    [activeBlockId, commitBlocks, docBundle.document.id, mode, zoomState.endIdx, zoomState.isZoomed, zoomState.rootDepth],
+  );
+
+  const handlePasteInBlock = useCallback(
+    async (blockId: string, e: ClipboardEvent<HTMLTextAreaElement>) => {
+      const imgFile = getClipboardImageFile(e.clipboardData);
+      if (!imgFile) return;
+      e.preventDefault();
+      const relPath = await uploadImageFile(imgFile);
+      if (!relPath) return;
+      const latest = blocksRef.current.find((b) => b.id === blockId);
+      if (!latest) return;
+      const embed = `![[${relPath}]]`;
+      const nextContent = latest.rawContent.trim().length === 0 ? embed : `${latest.rawContent}\n${embed}`;
+      updateBlock(blockId, { rawContent: nextContent, plainText: nextContent });
+      setPendingFocus({ blockId, position: "end" });
+    },
+    [updateBlock, uploadImageFile],
+  );
+
+  const handlePasteInRaw = useCallback(
+    async (e: ClipboardEvent<HTMLTextAreaElement>) => {
+      const imgFile = getClipboardImageFile(e.clipboardData);
+      if (!imgFile) return;
+      e.preventDefault();
+      const start = e.currentTarget.selectionStart ?? rawMarkdown.length;
+      const end = e.currentTarget.selectionEnd ?? rawMarkdown.length;
+      const relPath = await uploadImageFile(imgFile);
+      if (!relPath) return;
+      setRawMarkdown((prev) => `${prev.slice(0, start)}![[${relPath}]]${prev.slice(end)}`);
+      setDirty(true);
+    },
+    [rawMarkdown.length, uploadImageFile],
+  );
+
+  const handleImageFileSelect = useCallback(
+    async (e: ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      e.target.value = "";
+      if (!file) return;
+      const relPath = await uploadImageFile(file);
+      if (!relPath) return;
+      if (mode === "hybrid" && activeBlockId) {
+        const activeBlk = blocksRef.current.find((b) => b.id === activeBlockId);
+        if (activeBlk && activeBlk.blockType !== "divider" && activeBlk.rawContent.trim() === "") {
+          const embed = `![[${relPath}]]`;
+          updateBlock(activeBlk.id, { rawContent: embed, plainText: embed });
+          setPendingFocus({ blockId: activeBlk.id, position: "end" });
+          return;
+        }
+      }
+      insertImageBlock(relPath);
+    },
+    [activeBlockId, insertImageBlock, mode, updateBlock, uploadImageFile],
+  );
+
+  const handleContainerDragOver = useCallback((e: DragEvent<HTMLDivElement>) => {
+    if (dragBlockId || !Array.from(e.dataTransfer.types).includes("Files")) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "copy";
+    if (!isDraggingImageFile) setIsDraggingImageFile(true);
+  }, [dragBlockId, isDraggingImageFile]);
+
+  const handleContainerDragLeave = useCallback((e: DragEvent<HTMLDivElement>) => {
+    if (isDraggingImageFile && !e.currentTarget.contains(e.relatedTarget as Node | null)) {
+      setIsDraggingImageFile(false);
     }
+  }, [isDraggingImageFile]);
 
-    // 3. Block-ref `((query` before cursor
-    const refMatch = /\(\(([^)\n]*)$/.exec(before);
-    if (refMatch) {
-      return {
-        kind: "blockRef",
-        blockId,
-        query: refMatch[1],
-        triggerStart: refMatch.index,
-        triggerEnd: cursorPos,
-      };
+  const handleContainerDrop = useCallback(async (e: DragEvent<HTMLDivElement>) => {
+    if (dragBlockId) return;
+    const imageFiles = Array.from(e.dataTransfer.files).filter((f) => f.type.startsWith("image/"));
+    setIsDraggingImageFile(false);
+    if (imageFiles.length === 0) return;
+    e.preventDefault();
+    for (const file of imageFiles) {
+      const relPath = await uploadImageFile(file);
+      if (relPath) insertImageBlock(relPath);
     }
+  }, [dragBlockId, insertImageBlock, uploadImageFile]);
 
-    return null;
-  };
-
-  const handleContentChange = (
-    block: Block,
-    value: string,
-    cursorPos: number,
-    el: HTMLTextAreaElement,
-  ) => {
+  // Block operations
+  const handleContentChange = (block: Block, value: string, cursorPos: number, el: HTMLTextAreaElement) => {
     autoResizeTextarea(el);
-    updateBlock(
-      block.id,
-      { rawContent: value, plainText: value },
-      { coalesceBlockId: block.id },
-    );
-    const detected = detectAutocomplete(block.id, value, cursorPos);
-    setMenu(detected);
+    updateBlock(block.id, { rawContent: value, plainText: value }, { coalesceBlockId: block.id });
+    setMenu(detectAutocomplete(block.id, value, cursorPos));
   };
 
-  const applySlashOption = (
-    block: Block,
-    opt: (typeof SLASH_OPTIONS)[number],
-  ) => {
-    const initial = opt.initialContent ?? "";
-    updateBlock(block.id, {
-      blockType: opt.type,
-      headingLevel: opt.headingLevel ?? null,
-      rawContent: initial,
-      plainText: initial,
-      task:
-        opt.type === "taskItem"
-          ? {
-              status: "TODO",
-              priority: null,
-              scheduledAt: null,
-              deadlineAt: null,
-              recurrence: null,
-            }
-          : null,
-    });
+  const applySlashOption = (block: Block, opt: SlashOption) => {
+    updateBlock(block.id, buildSlashOptionPatch(opt));
     setMenu(null);
-    if (opt.type !== "divider") {
-      setPendingFocus({ blockId: block.id, position: "end" });
-    }
+    if (opt.type !== "divider") setPendingFocus({ blockId: block.id, position: "end" });
   };
 
   const applyWikiSuggestion = (block: Block, doc: DocumentSummary) => {
     if (!menu || menu.kind !== "wiki") return;
-    const insertion = `[[${doc.title}]]`;
-    const nextValue =
-      block.rawContent.slice(0, menu.triggerStart) +
-      insertion +
-      block.rawContent.slice(menu.triggerEnd);
-    const nextCursor = menu.triggerStart + insertion.length;
+    const { nextValue, nextCursor } = applyInlineInsertion(block.rawContent, menu.triggerStart, menu.triggerEnd, `[[${doc.title}]]`);
     updateBlock(block.id, { rawContent: nextValue, plainText: nextValue });
     setMenu(null);
     setPendingFocus({ blockId: block.id, position: nextCursor });
   };
 
-  const applyBlockRefSuggestion = (
-    block: Block,
-    candidate: BlockRefCandidate,
-  ) => {
+  const applyBlockRefSuggestion = (block: Block, candidate: BlockRefCandidate) => {
     if (!menu || menu.kind !== "blockRef") return;
-    const insertion = `((${candidate.blockId}))`;
-    const nextValue =
-      block.rawContent.slice(0, menu.triggerStart) +
-      insertion +
-      block.rawContent.slice(menu.triggerEnd);
-    const nextCursor = menu.triggerStart + insertion.length;
+    const { nextValue, nextCursor } = applyInlineInsertion(block.rawContent, menu.triggerStart, menu.triggerEnd, `((${candidate.blockId}))`);
     updateBlock(block.id, { rawContent: nextValue, plainText: nextValue });
     setMenu(null);
     setPendingFocus({ blockId: block.id, position: nextCursor });
   };
 
-  const insertBlockAfter = (
-    index: number,
-    depth = 0,
-    blockType: BlockType = "paragraph",
-  ) => {
-    const newBlock: Block = {
-      id: `b-new-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
-      docId: docBundle.document.id,
-      parentBlockId: null,
-      depth,
-      sortOrder: (index + 1.5) * 1000,
-      blockType,
-      headingLevel: blockType === "heading" ? 2 : null,
-      codeLang: null,
-      hasExplicitId: false,
-      rawContent: "",
-      plainText: "",
-      properties: {},
-      tags: [],
-      collapsed: false,
-      task:
-        blockType === "taskItem"
-          ? {
-              status: "TODO",
-              priority: null,
-              scheduledAt: null,
-              deadlineAt: null,
-              recurrence: null,
-            }
-          : null,
-      updatedAt: Math.floor(Date.now() / 1000),
-    };
+  const insertBlockAfter = (index: number, depth = 0, blockType: BlockType = "paragraph") => {
+    const newBlock = createNewBlock(docBundle.document.id, index, depth, blockType);
     const next = [...blocksRef.current];
     next.splice(index + 1, 0, newBlock);
     commitBlocks(next);
@@ -1225,48 +584,27 @@ export function HybridEditor({
   };
 
   const moveBlock = (index: number, dir: -1 | 1) => {
-    const target = index + dir;
-    if (target < 0 || target >= blocksRef.current.length) return;
-    const next = [...blocksRef.current];
-    const [removed] = next.splice(index, 1);
-    next.splice(target, 0, removed);
-    commitBlocks(next);
+    const next = moveBlockInList(blocksRef.current, index, dir);
+    if (next) commitBlocks(next);
   };
 
   const reorderBlockByIds = (sourceId: string, targetId: string) => {
-    if (sourceId === targetId) return;
-    const current = blocksRef.current;
-    const fromIdx = current.findIndex((b) => b.id === sourceId);
-    const toIdx = current.findIndex((b) => b.id === targetId);
-    if (fromIdx === -1 || toIdx === -1) return;
-    const next = [...current];
-    const [moved] = next.splice(fromIdx, 1);
-    next.splice(toIdx, 0, moved);
-    commitBlocks(next);
+    const next = reorderBlockList(blocksRef.current, sourceId, targetId);
+    if (next) commitBlocks(next);
   };
 
   const removeBlock = (index: number) => {
     if (blocksRef.current.length <= 1) return;
     const removed = blocksRef.current[index];
-    const next = blocksRef.current.filter((_, idx) => idx !== index);
-    if (removed && zoomBlockId === removed.id) {
-      setZoomBlockId(null);
-    }
-    commitBlocks(next);
+    if (removed && zoomBlockId === removed.id) setZoomBlockId(null);
+    commitBlocks(blocksRef.current.filter((_, idx) => idx !== index));
   };
 
   const handleCopyLazyBlockRef = async (block: Block) => {
-    if (dirty) {
-      await handleSave();
-    }
-    const materializedId = await vaultApi.materializeBlockId(
-      docBundle.document.path,
-      block.id,
-    );
+    if (dirty) await handleSave();
+    const materializedId = await vaultApi.materializeBlockId(docBundle.document.path, block.id);
     updateBlock(block.id, { hasExplicitId: true }, { skipHistory: true });
-    await navigator.clipboard
-      ?.writeText(`((${materializedId}))`)
-      .catch(() => {});
+    await navigator.clipboard?.writeText(`((${materializedId}))`).catch(() => {});
     setCopiedId(block.id);
     setTimeout(() => setCopiedId(null), 2000);
     const fresh = await vaultApi.getDocument(docBundle.document.path);
@@ -1283,126 +621,122 @@ export function HybridEditor({
     setDirty(true);
   };
 
-  const cycleTaskInBlock = (blk: Block) => {
-    const curr = blk.task?.status ?? "TODO";
-    const nextStatus: TaskStatus =
-      curr === "TODO" ? "DOING" : curr === "DOING" ? "DONE" : "TODO";
-    updateBlock(blk.id, {
-      task: {
-        status: nextStatus,
-        priority: blk.task?.priority ?? null,
-        scheduledAt: blk.task?.scheduledAt ?? null,
-        deadlineAt: blk.task?.deadlineAt ?? null,
-        recurrence: blk.task?.recurrence ?? null,
-      },
-    });
-  };
+  const cycleTaskInBlock = (blk: Block) => updateBlock(blk.id, buildNextTaskPatch(blk));
 
-  const handleJumpToBlock = useCallback(
-    (blockId: string) => {
-      const targetIdx = blocksRef.current.findIndex((b) => b.id === blockId);
-      if (targetIdx === -1) return;
-
-      if (
-        zoomState.isZoomed &&
-        (targetIdx < zoomState.startIdx || targetIdx > zoomState.endIdx)
-      ) {
-        setZoomBlockId(null);
-      }
-
-      setActiveBlockId(blockId);
-
-      if (mode === "raw") {
-        setMode("hybrid");
-        setPendingFocus({ blockId, position: "end" });
-        return;
-      }
-
-      if (mode === "hybrid") {
-        setPendingFocus({ blockId, position: "end" });
-      } else {
-        blockWrapperRefs.current[blockId]?.scrollIntoView({
-          behavior: "smooth",
-          block: "center",
-        });
-      }
-    },
-    [mode, zoomState.endIdx, zoomState.isZoomed, zoomState.startIdx],
-  );
+  const handleJumpToBlock = useCallback((blockId: string) => {
+    const targetIdx = blocksRef.current.findIndex((b) => b.id === blockId);
+    if (targetIdx === -1) return;
+    if (zoomState.isZoomed && (targetIdx < zoomState.startIdx || targetIdx > zoomState.endIdx)) {
+      setZoomBlockId(null);
+    }
+    setActiveBlockId(blockId);
+    if (mode === "raw") {
+      setMode("hybrid");
+      setPendingFocus({ blockId, position: "end" });
+    } else if (mode === "hybrid") {
+      setPendingFocus({ blockId, position: "end" });
+    } else {
+      blockWrapperRefs.current[blockId]?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+  }, [mode, zoomState.endIdx, zoomState.isZoomed, zoomState.startIdx]);
 
   const handleExportCleanMarkdown = () => {
     const sourceMd =
-      mode === "raw"
-        ? rawMarkdown
-        : dirty
-          ? serializeBlocksToCleanMarkdown(blocks, frontmatter)
+      mode === "raw" ? rawMarkdown
+        : dirty ? serializeBlocksToCleanMarkdown(blocks, frontmatter)
           : docBundle.rawMarkdown;
-    const cleanMd = stripExplicitBlockIds(sourceMd);
     const name = `${slugifyFilename(docBundle.document.title || docBundle.document.path)}.md`;
-    triggerFileDownload(name, cleanMd, "text/markdown;charset=utf-8");
+    triggerFileDownload(name, stripExplicitBlockIds(sourceMd), "text/markdown;charset=utf-8");
   };
 
   const handleExportHtml = () => {
-    const html = renderDocumentToStandaloneHtml(
-      docBundle.document.title || docBundle.document.path,
-      blocks,
-    );
+    const html = renderDocumentToStandaloneHtml(docBundle.document.title || docBundle.document.path, blocks);
     const name = `${slugifyFilename(docBundle.document.title || docBundle.document.path)}.html`;
     triggerFileDownload(name, html, "text/html;charset=utf-8");
   };
 
-  const focusAdjacentVisibleBlock = (
-    currentBlockIdx: number,
-    direction: -1 | 1,
-  ) => {
+  const focusAdjacentVisibleBlock = (currentBlockIdx: number, direction: -1 | 1) => {
     const posInVisible = visibleIndices.indexOf(currentBlockIdx);
     if (posInVisible === -1) return;
-    let cursor = posInVisible + direction;
-    while (cursor >= 0 && cursor < visibleIndices.length) {
+    for (let cursor = posInVisible + direction; cursor >= 0 && cursor < visibleIndices.length; cursor += direction) {
       const candidate = blocks[visibleIndices[cursor]];
       if (candidate && candidate.blockType !== "divider") {
-        setPendingFocus({
-          blockId: candidate.id,
-          position: direction === -1 ? "end" : "start",
-        });
+        setPendingFocus({ blockId: candidate.id, position: direction === -1 ? "end" : "start" });
         return;
       }
-      cursor += direction;
     }
   };
 
-  const loadHoverPreview = useCallback(
-    async (target: string): Promise<HoverDocPreview | "not_found"> => {
-      const key = target.trim().toLowerCase();
-      const cached = hoverDocCacheRef.current[key];
-      if (cached) return cached;
-      try {
-        const doc = await vaultApi.getDocument(target);
-        if (!doc) {
-          hoverDocCacheRef.current[key] = "not_found";
-          return "not_found";
-        }
-        const snippetText = doc.blocks
-          .filter((b) => b.blockType !== "divider")
-          .map((b) => stripExplicitBlockIds(b.plainText || b.rawContent).trim())
-          .filter(Boolean)
-          .join(" ")
-          .slice(0, 260);
-        const entry: HoverDocPreview = {
-          title: doc.document.title,
-          path: doc.document.path,
-          snippet: snippetText || "(Leeres Dokument)",
-          tags: doc.document.tags,
-        };
-        hoverDocCacheRef.current[key] = entry;
-        return entry;
-      } catch {
-        hoverDocCacheRef.current[key] = "not_found";
-        return "not_found";
+  const handleBlockKeyDown = (blk: Block, idx: number, e: ReactKeyboardEvent<HTMLTextAreaElement>) => {
+    if (menu?.blockId === blk.id) {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setMenu(null);
+        return;
       }
-    },
-    [],
-  );
+      if (activeMenuCount > 0) {
+        if (e.key === "ArrowDown") {
+          e.preventDefault();
+          setMenuIndex((i) => (i + 1) % activeMenuCount);
+          return;
+        }
+        if (e.key === "ArrowUp") {
+          e.preventDefault();
+          setMenuIndex((i) => (i - 1 + activeMenuCount) % activeMenuCount);
+          return;
+        }
+        if (e.key === "Enter" && !e.shiftKey) {
+          e.preventDefault();
+          const safeIdx = Math.min(menuIndex, activeMenuCount - 1);
+          if (menu.kind === "slash" && filteredSlashOptions[safeIdx]) {
+            applySlashOption(blk, filteredSlashOptions[safeIdx]);
+          } else if (menu.kind === "wiki" && filteredWikiDocs[safeIdx]) {
+            applyWikiSuggestion(blk, filteredWikiDocs[safeIdx]);
+          } else if (menu.kind === "blockRef" && filteredBlockRefs[safeIdx]) {
+            applyBlockRefSuggestion(blk, filteredBlockRefs[safeIdx]);
+          }
+          return;
+        }
+      }
+    }
+
+    const el = e.currentTarget;
+    const noMod = !e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey;
+    if (e.key === "ArrowUp" && noMod && el.selectionStart === 0 && el.selectionEnd === 0) {
+      e.preventDefault();
+      focusAdjacentVisibleBlock(idx, -1);
+    } else if (e.key === "ArrowDown" && noMod && el.selectionStart === el.value.length && el.selectionEnd === el.value.length) {
+      e.preventDefault();
+      focusAdjacentVisibleBlock(idx, 1);
+    } else if (e.key === "Tab") {
+      e.preventDefault();
+      updateBlock(blk.id, { depth: e.shiftKey ? Math.max(0, blk.depth - 1) : blk.depth + 1 });
+    } else if (e.key === "Backspace" && blk.rawContent === "" && blocks.length > 1 && idx > 0) {
+      e.preventDefault();
+      const prevId = blocks[idx - 1].id;
+      removeBlock(idx);
+      setPendingFocus({ blockId: prevId, position: "end" });
+    } else if (e.key === "Enter" && !e.shiftKey && blk.blockType !== "codeBlock" && blk.blockType !== "callout") {
+      e.preventDefault();
+      insertBlockAfter(
+        idx,
+        blk.depth,
+        blk.blockType === "listItem" || blk.blockType === "taskItem" ? blk.blockType : "paragraph",
+      );
+    }
+  };
+
+  const loadHoverPreview = useCallback(async (target: string): Promise<HoverDocPreview | "not_found"> => {
+    const key = target.trim().toLowerCase();
+    const cached = hoverDocCacheRef.current[key];
+    if (cached) return cached;
+    try {
+      const doc = await vaultApi.getDocument(target);
+      return (hoverDocCacheRef.current[key] = doc ? buildHoverPreviewFromDoc(doc) : "not_found");
+    } catch {
+      return (hoverDocCacheRef.current[key] = "not_found");
+    }
+  }, []);
 
   const matchingBlockIds = useMemo(() => {
     const set = new Set<string>();
@@ -1411,11 +745,34 @@ export function HybridEditor({
     }
     return set;
   }, [findMatches]);
-
   const activeMatchBlockId = findMatches[activeMatchIdx]?.blockId ?? null;
 
   return (
-    <div className="flex h-full flex-col overflow-hidden bg-zinc-950">
+    <div
+      onDragOver={handleContainerDragOver}
+      onDragLeave={handleContainerDragLeave}
+      onDrop={(e) => void handleContainerDrop(e)}
+      className={`relative flex h-full flex-col overflow-hidden bg-zinc-950 ${
+        isDraggingImageFile ? "ring-2 ring-inset ring-indigo-500/70" : ""
+      }`}
+    >
+      <input
+        ref={imageInputRef}
+        type="file"
+        accept="image/*"
+        className="hidden"
+        onChange={(e) => void handleImageFileSelect(e)}
+      />
+
+      {isDraggingImageFile && (
+        <div className="pointer-events-none absolute inset-4 z-50 flex items-center justify-center rounded-2xl border-2 border-dashed border-indigo-400 bg-zinc-950/85 backdrop-blur-xs">
+          <div className="flex items-center gap-2.5 rounded-xl border border-indigo-500/40 bg-indigo-500/15 px-5 py-3 text-sm font-medium text-indigo-200 shadow-xl">
+            <ImagePlus className="h-5 w-5 text-indigo-300" />
+            <span>Bild hier ablegen, um es in assets/ einzubetten</span>
+          </div>
+        </div>
+      )}
+
       {/* Header Toolbar */}
       <div className="flex flex-wrap items-center justify-between gap-2.5 border-b border-zinc-800/80 px-5 py-2.5">
         <div className="min-w-0">
@@ -1427,10 +784,7 @@ export function HybridEditor({
                   onChange={(e) => setRenameValue(e.target.value)}
                   onKeyDown={(e) => {
                     if (e.key === "Enter") void handleConfirmRename();
-                    if (e.key === "Escape") {
-                      setRenaming(false);
-                      setRenameValue(docBundle.document.path);
-                    }
+                    if (e.key === "Escape") { setRenaming(false); setRenameValue(docBundle.document.path); }
                   }}
                   autoFocus
                   className="w-56 rounded-lg border border-indigo-500/60 bg-zinc-900 px-2 py-0.5 font-mono text-xs text-zinc-100 outline-none"
@@ -1443,10 +797,7 @@ export function HybridEditor({
                   <Check className="h-3 w-3" />
                 </button>
                 <button
-                  onClick={() => {
-                    setRenaming(false);
-                    setRenameValue(docBundle.document.path);
-                  }}
+                  onClick={() => { setRenaming(false); setRenameValue(docBundle.document.path); }}
                   title="Abbrechen"
                   className="rounded-lg bg-zinc-800 p-1 text-zinc-400 hover:text-zinc-200"
                 >
@@ -1455,10 +806,7 @@ export function HybridEditor({
               </div>
             ) : (
               <button
-                onClick={() => {
-                  setRenameValue(docBundle.document.path);
-                  setRenaming(true);
-                }}
+                onClick={() => { setRenameValue(docBundle.document.path); setRenaming(true); }}
                 title="Notiz umbenennen / verschieben (aktualisiert [[Wiki-Links]])"
                 className="group flex items-center gap-1.5 rounded-lg px-1.5 py-0.5 font-mono text-xs text-zinc-400 transition hover:bg-zinc-900 hover:text-zinc-200"
               >
@@ -1470,78 +818,58 @@ export function HybridEditor({
               BLAKE3: {docBundle.document.blake3Hash.slice(0, 10)}
             </span>
             {dirty ? (
-              <span className="rounded-full bg-amber-500/20 px-2 py-0.5 text-[10px] font-medium text-amber-300">
-                Ungespeichert
-              </span>
+              <span className="rounded-full bg-amber-500/20 px-2 py-0.5 text-[10px] font-medium text-amber-300">Ungespeichert</span>
             ) : (
-              <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-medium text-emerald-300">
-                Gespeichert
-              </span>
+              <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-medium text-emerald-300">Gespeichert</span>
             )}
           </div>
         </div>
 
         <div className="flex flex-wrap items-center gap-1.5">
-          {/* Undo / Redo */}
           {mode !== "raw" && (
             <div className="flex items-center rounded-xl border border-zinc-800 bg-zinc-900 p-0.5">
-              <button
-                onClick={handleUndo}
-                disabled={undoStack.length === 0}
-                title="Rückgängig (Ctrl+Z)"
-                className="rounded-lg p-1.5 text-zinc-400 transition hover:bg-zinc-800 hover:text-zinc-100 disabled:opacity-30"
-              >
+              <button onClick={handleUndo} disabled={undoStack.length === 0} title="Rückgängig (Ctrl+Z)" className="rounded-lg p-1.5 text-zinc-400 transition hover:bg-zinc-800 hover:text-zinc-100 disabled:opacity-30">
                 <Undo2 className="h-3.5 w-3.5" />
               </button>
-              <button
-                onClick={handleRedo}
-                disabled={redoStack.length === 0}
-                title="Wiederholen (Ctrl+Shift+Z / Ctrl+Y)"
-                className="rounded-lg p-1.5 text-zinc-400 transition hover:bg-zinc-800 hover:text-zinc-100 disabled:opacity-30"
-              >
+              <button onClick={handleRedo} disabled={redoStack.length === 0} title="Wiederholen (Ctrl+Shift+Z / Ctrl+Y)" className="rounded-lg p-1.5 text-zinc-400 transition hover:bg-zinc-800 hover:text-zinc-100 disabled:opacity-30">
                 <Redo2 className="h-3.5 w-3.5" />
               </button>
             </div>
           )}
 
-          {/* Find & Replace toggle */}
+          <button
+            onClick={() => imageInputRef.current?.click()}
+            disabled={uploadingImage}
+            title="Bild einfügen (Upload nach assets/)"
+            className="flex items-center gap-1 rounded-xl border border-zinc-800 bg-zinc-900 px-2 py-1.5 text-[11px] font-medium text-zinc-400 transition hover:border-zinc-700 hover:text-zinc-200 disabled:opacity-50"
+          >
+            <ImagePlus className="h-3.5 w-3.5" />
+            <span className="hidden lg:inline">{uploadingImage ? "Lädt..." : "Bild einfügen"}</span>
+          </button>
+
           <button
             onClick={() => {
               setFindOpen((prev) => {
                 const next = !prev;
-                if (next) {
-                  window.requestAnimationFrame(() =>
-                    findInputRef.current?.focus(),
-                  );
-                }
+                if (next) window.requestAnimationFrame(() => findInputRef.current?.focus());
                 return next;
               });
             }}
             title="Suchen & Ersetzen (Ctrl+F)"
-            className={`rounded-xl border p-1.5 transition ${
-              findOpen
-                ? "border-indigo-500/50 bg-indigo-500/15 text-indigo-300"
-                : "border-zinc-800 bg-zinc-900 text-zinc-400 hover:text-zinc-200"
-            }`}
+            className={`rounded-xl border p-1.5 transition ${findOpen ? "border-indigo-500/50 bg-indigo-500/15 text-indigo-300" : "border-zinc-800 bg-zinc-900 text-zinc-400 hover:text-zinc-200"}`}
           >
             <Search className="h-3.5 w-3.5" />
           </button>
 
-          {/* Outline toggle */}
           <button
             onClick={() => setShowOutline((v) => !v)}
             title="Gliederung & Dokumentstatistik umschalten"
-            className={`flex items-center gap-1 rounded-xl border px-2 py-1.5 text-[11px] font-medium transition ${
-              showOutline
-                ? "border-indigo-500/50 bg-indigo-500/15 text-indigo-200"
-                : "border-zinc-800 bg-zinc-900 text-zinc-400 hover:text-zinc-200"
-            }`}
+            className={`flex items-center gap-1 rounded-xl border px-2 py-1.5 text-[11px] font-medium transition ${showOutline ? "border-indigo-500/50 bg-indigo-500/15 text-indigo-200" : "border-zinc-800 bg-zinc-900 text-zinc-400 hover:text-zinc-200"}`}
           >
             <ListTree className="h-3.5 w-3.5" />
             <span className="hidden lg:inline">Gliederung</span>
           </button>
 
-          {/* History modal trigger */}
           <button
             onClick={() => setHistoryOpen(true)}
             title="Versionsverlauf (Snapshots)"
@@ -1551,90 +879,42 @@ export function HybridEditor({
             <span className="hidden lg:inline">Verlauf</span>
           </button>
 
-          {/* Export Clean .md & .html */}
           <div className="flex items-center rounded-xl border border-zinc-800 bg-zinc-900 p-0.5">
-            <button
-              onClick={handleExportCleanMarkdown}
-              title="Sauberes Markdown (.md ohne ^block-id) exportieren"
-              className="flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-medium text-zinc-400 transition hover:bg-zinc-800 hover:text-zinc-100"
-            >
+            <button onClick={handleExportCleanMarkdown} title="Sauberes Markdown (.md ohne ^block-id) exportieren" className="flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-medium text-zinc-400 transition hover:bg-zinc-800 hover:text-zinc-100">
               <FileDown className="h-3.5 w-3.5" />
               <span>.md</span>
             </button>
-            <button
-              onClick={handleExportHtml}
-              title="Eigenständiges HTML (.html) exportieren"
-              className="flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-medium text-zinc-400 transition hover:bg-zinc-800 hover:text-zinc-100"
-            >
+            <button onClick={handleExportHtml} title="Eigenständiges HTML (.html) exportieren" className="flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-medium text-zinc-400 transition hover:bg-zinc-800 hover:text-zinc-100">
               <Download className="h-3.5 w-3.5" />
               <span>.html</span>
             </button>
           </div>
 
-          {/* Zen Mode */}
           <button
             onClick={handleToggleZen}
-            title={
-              effectiveZenMode ? "Zen-Modus beenden" : "Zen-Modus (Fokusansicht)"
-            }
-            className={`rounded-xl border p-1.5 transition ${
-              effectiveZenMode
-                ? "border-indigo-500/50 bg-indigo-500/15 text-indigo-300"
-                : "border-zinc-800 bg-zinc-900 text-zinc-400 hover:text-zinc-200"
-            }`}
+            title={effectiveZenMode ? "Zen-Modus beenden" : "Zen-Modus (Fokusansicht)"}
+            className={`rounded-xl border p-1.5 transition ${effectiveZenMode ? "border-indigo-500/50 bg-indigo-500/15 text-indigo-300" : "border-zinc-800 bg-zinc-900 text-zinc-400 hover:text-zinc-200"}`}
           >
-            {effectiveZenMode ? (
-              <Minimize2 className="h-3.5 w-3.5" />
-            ) : (
-              <Maximize2 className="h-3.5 w-3.5" />
-            )}
+            {effectiveZenMode ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
           </button>
 
           <button
             onClick={() => setAutoSave((v) => !v)}
             title="Automatisches Speichern nach 1,5 Sekunden umschalten"
-            className={`rounded-xl border px-2.5 py-1 text-[11px] font-medium transition ${
-              autoSave
-                ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
-                : "border-zinc-800 bg-zinc-900 text-zinc-500 hover:text-zinc-300"
-            }`}
+            className={`rounded-xl border px-2.5 py-1 text-[11px] font-medium transition ${autoSave ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300" : "border-zinc-800 bg-zinc-900 text-zinc-500 hover:text-zinc-300"}`}
           >
             Auto-Save: {autoSave ? "An" : "Aus"}
           </button>
 
           <div className="flex rounded-xl border border-zinc-800 bg-zinc-900 p-0.5 text-xs">
-            <button
-              onClick={() => setMode("hybrid")}
-              className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1 font-medium transition ${
-                mode === "hybrid"
-                  ? "bg-indigo-600 text-white"
-                  : "text-zinc-400 hover:text-zinc-200"
-              }`}
-            >
-              <PenLine className="h-3.5 w-3.5" />
-              Hybrid-Editor
+            <button onClick={() => setMode("hybrid")} className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1 font-medium transition ${mode === "hybrid" ? "bg-indigo-600 text-white" : "text-zinc-400 hover:text-zinc-200"}`}>
+              <PenLine className="h-3.5 w-3.5" />Hybrid-Editor
             </button>
-            <button
-              onClick={() => setMode("preview")}
-              className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1 font-medium transition ${
-                mode === "preview"
-                  ? "bg-indigo-600 text-white"
-                  : "text-zinc-400 hover:text-zinc-200"
-              }`}
-            >
-              <Eye className="h-3.5 w-3.5" />
-              Leseansicht
+            <button onClick={() => setMode("preview")} className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1 font-medium transition ${mode === "preview" ? "bg-indigo-600 text-white" : "text-zinc-400 hover:text-zinc-200"}`}>
+              <Eye className="h-3.5 w-3.5" />Leseansicht
             </button>
-            <button
-              onClick={() => setMode("raw")}
-              className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1 font-medium transition ${
-                mode === "raw"
-                  ? "bg-indigo-600 text-white"
-                  : "text-zinc-400 hover:text-zinc-200"
-              }`}
-            >
-              <FileCode2 className="h-3.5 w-3.5" />
-              Markdown
+            <button onClick={() => setMode("raw")} className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1 font-medium transition ${mode === "raw" ? "bg-indigo-600 text-white" : "text-zinc-400 hover:text-zinc-200"}`}>
+              <FileCode2 className="h-3.5 w-3.5" />Markdown
             </button>
           </div>
 
@@ -1650,11 +930,7 @@ export function HybridEditor({
 
           <button
             onClick={() => {
-              if (
-                window.confirm(
-                  `Notiz "${docBundle.document.path}" wirklich löschen?`,
-                )
-              ) {
+              if (window.confirm(`Notiz "${docBundle.document.path}" wirklich löschen?`)) {
                 void onDeleteDocument(docBundle.document.path);
               }
             }}
@@ -1666,139 +942,42 @@ export function HybridEditor({
         </div>
       </div>
 
-      {/* Compact In-Document Find & Replace Bar */}
       {findOpen && (
-        <div className="flex flex-wrap items-center gap-2 border-b border-zinc-800/80 bg-zinc-900/75 px-5 py-2 text-xs">
-          <div className="flex items-center gap-1.5 rounded-lg border border-zinc-700 bg-zinc-950 px-2 py-1">
-            <Search className="h-3.5 w-3.5 text-zinc-500" />
-            <input
-              ref={findInputRef}
-              value={findQuery}
-              onChange={(e) => {
-                setFindQuery(e.target.value);
-                setActiveMatchIdx(0);
-              }}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  jumpToMatch(activeMatchIdx + (e.shiftKey ? -1 : 1));
-                } else if (e.key === "Escape") {
-                  e.preventDefault();
-                  setFindOpen(false);
-                }
-              }}
-              placeholder="Suchen..."
-              className="w-40 bg-transparent text-xs text-zinc-100 placeholder-zinc-600 outline-none"
-            />
-            <button
-              onClick={() => setFindCaseSensitive((v) => !v)}
-              title="Groß-/Kleinschreibung beachten"
-              className={`rounded px-1 py-0.5 font-mono text-[10px] font-semibold transition ${
-                findCaseSensitive
-                  ? "bg-indigo-600 text-white"
-                  : "text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200"
-              }`}
-            >
-              Aa
-            </button>
-          </div>
-
-          <div className="flex items-center gap-1 font-mono text-[11px] text-zinc-400">
-            <span className="min-w-14 text-center">
-              {findMatches.length === 0
-                ? "0 / 0"
-                : `${activeMatchIdx + 1} / ${findMatches.length}`}
-            </span>
-            <button
-              onClick={() => jumpToMatch(activeMatchIdx - 1)}
-              disabled={findMatches.length === 0}
-              title="Vorheriger Treffer (Shift+Enter)"
-              className="rounded p-1 hover:bg-zinc-800 disabled:opacity-30"
-            >
-              <ArrowUp className="h-3 w-3" />
-            </button>
-            <button
-              onClick={() => jumpToMatch(activeMatchIdx + 1)}
-              disabled={findMatches.length === 0}
-              title="Nächster Treffer (Enter)"
-              className="rounded p-1 hover:bg-zinc-800 disabled:opacity-30"
-            >
-              <ArrowDown className="h-3 w-3" />
-            </button>
-          </div>
-
-          <div className="flex items-center gap-1.5 rounded-lg border border-zinc-700 bg-zinc-950 px-2 py-1">
-            <Replace className="h-3.5 w-3.5 text-zinc-500" />
-            <input
-              value={replaceQuery}
-              onChange={(e) => setReplaceQuery(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Escape") {
-                  e.preventDefault();
-                  setFindOpen(false);
-                }
-              }}
-              placeholder="Ersetzen durch..."
-              className="w-40 bg-transparent text-xs text-zinc-100 placeholder-zinc-600 outline-none"
-            />
-          </div>
-
-          <button
-            onClick={handleReplaceCurrent}
-            disabled={!findQuery || findMatches.length === 0}
-            className="rounded-lg border border-zinc-700 bg-zinc-800 px-2.5 py-1 text-[11px] font-medium text-zinc-200 transition hover:bg-zinc-700 disabled:opacity-40"
-          >
-            Ersetzen
-          </button>
-          <button
-            onClick={handleReplaceAll}
-            disabled={!findQuery || findMatches.length === 0}
-            className="rounded-lg bg-indigo-600 px-2.5 py-1 text-[11px] font-semibold text-white transition hover:bg-indigo-500 disabled:opacity-40"
-          >
-            Alle ersetzen
-          </button>
-
-          <button
-            onClick={() => setFindOpen(false)}
-            title="Suchleiste schließen (Esc)"
-            className="ml-auto rounded p-1 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100"
-          >
-            <X className="h-3.5 w-3.5" />
-          </button>
-        </div>
+        <FindReplaceBar
+          findInputRef={findInputRef}
+          findQuery={findQuery}
+          onFindQueryChange={(val) => { setFindQuery(val); setActiveMatchIdx(0); }}
+          replaceQuery={replaceQuery}
+          onReplaceQueryChange={setReplaceQuery}
+          caseSensitive={findCaseSensitive}
+          onToggleCaseSensitive={() => setFindCaseSensitive((v) => !v)}
+          matchCount={findMatches.length}
+          activeMatchIdx={activeMatchIdx}
+          onPrevMatch={() => jumpToMatch(activeMatchIdx - 1)}
+          onNextMatch={() => jumpToMatch(activeMatchIdx + 1)}
+          onReplaceCurrent={handleReplaceCurrent}
+          onReplaceAll={handleReplaceAll}
+          onClose={() => setFindOpen(false)}
+        />
       )}
 
-      {/* Block Zoom Breadcrumb Bar */}
       {zoomState.isZoomed && mode !== "raw" && (
         <div className="flex items-center justify-between gap-2 border-b border-indigo-500/30 bg-indigo-500/10 px-5 py-2 text-xs">
           <div className="flex min-w-0 flex-wrap items-center gap-1 text-indigo-200">
             <ZoomIn className="mr-1 h-3.5 w-3.5 shrink-0 text-indigo-400" />
-            <button
-              onClick={() => setZoomBlockId(null)}
-              className="rounded px-1.5 py-0.5 font-medium hover:bg-indigo-500/20"
-            >
+            <button onClick={() => setZoomBlockId(null)} className="rounded px-1.5 py-0.5 font-medium hover:bg-indigo-500/20">
               Dokument
             </button>
             {zoomState.breadcrumbs.map((crumb, idx) => {
               const isCurrent = idx === zoomState.breadcrumbs.length - 1;
-              const label =
-                stripExplicitBlockIds(
-                  crumb.plainText || crumb.rawContent,
-                ).trim() || "(Block)";
+              const label = stripExplicitBlockIds(crumb.plainText || crumb.rawContent).trim() || "(Block)";
               return (
-                <span key={crumb.id} className="flex items-center gap-1 min-w-0">
+                <span key={crumb.id} className="flex min-w-0 items-center gap-1">
                   <span className="text-indigo-400/70">/</span>
                   {isCurrent ? (
-                    <span className="max-w-xs truncate rounded bg-indigo-500/20 px-1.5 py-0.5 font-semibold text-indigo-100">
-                      {label}
-                    </span>
+                    <span className="max-w-xs truncate rounded bg-indigo-500/20 px-1.5 py-0.5 font-semibold text-indigo-100">{label}</span>
                   ) : (
-                    <button
-                      onClick={() => setZoomBlockId(crumb.id)}
-                      className="max-w-44 truncate rounded px-1.5 py-0.5 hover:bg-indigo-500/20"
-                    >
-                      {label}
-                    </button>
+                    <button onClick={() => setZoomBlockId(crumb.id)} className="max-w-44 truncate rounded px-1.5 py-0.5 hover:bg-indigo-500/20">{label}</button>
                   )}
                 </span>
               );
@@ -1819,10 +998,7 @@ export function HybridEditor({
             <AlertCircle className="h-3.5 w-3.5 shrink-0" />
             {editorError}
           </span>
-          <button
-            onClick={() => setEditorError(null)}
-            className="rounded p-0.5 hover:bg-rose-500/20"
-          >
+          <button onClick={() => setEditorError(null)} className="rounded p-0.5 hover:bg-rose-500/20">
             <X className="h-3.5 w-3.5" />
           </button>
         </div>
@@ -1832,7 +1008,6 @@ export function HybridEditor({
       <div className="flex min-h-0 flex-1 overflow-hidden">
         <div className="flex-1 overflow-y-auto px-6 py-8">
           <div className="mx-auto max-w-3xl">
-            {/* Properties / Frontmatter Bar */}
             {!effectiveZenMode && !zoomState.isZoomed && (
               <div className="mb-6 rounded-2xl border border-zinc-800/80 bg-zinc-900/40 p-3.5">
                 <div className="mb-2 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
@@ -1841,25 +1016,16 @@ export function HybridEditor({
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
                   {docBundle.document.tags.map((tag) => (
-                    <span
-                      key={tag}
-                      className="flex items-center gap-1 rounded-full bg-indigo-500/15 px-2.5 py-0.5 text-[11px] text-indigo-300"
-                    >
-                      <Hash className="h-3 w-3" />
-                      {tag}
+                    <span key={tag} className="flex items-center gap-1 rounded-full bg-indigo-500/15 px-2.5 py-0.5 text-[11px] text-indigo-300">
+                      <Hash className="h-3 w-3" />{tag}
                     </span>
                   ))}
                   {Object.entries(frontmatter)
                     .filter(([k]) => k !== "tags" && k !== "id")
                     .map(([k, v]) => (
-                      <div
-                        key={k}
-                        className="flex items-center gap-1.5 rounded-lg border border-zinc-800 bg-zinc-950 px-2 py-0.5 text-[11px]"
-                      >
+                      <div key={k} className="flex items-center gap-1.5 rounded-lg border border-zinc-800 bg-zinc-950 px-2 py-0.5 text-[11px]">
                         <span className="text-zinc-500">{k}:</span>
-                        <span className="font-mono text-zinc-200">
-                          {Array.isArray(v) ? v.join(", ") : String(v)}
-                        </span>
+                        <span className="font-mono text-zinc-200">{Array.isArray(v) ? v.join(", ") : String(v)}</span>
                       </div>
                     ))}
                   <div className="flex items-center gap-1">
@@ -1872,16 +1038,11 @@ export function HybridEditor({
                     <input
                       value={newPropVal}
                       onChange={(e) => setNewPropVal(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") addFrontmatterProperty();
-                      }}
+                      onKeyDown={(e) => { if (e.key === "Enter") addFrontmatterProperty(); }}
                       placeholder="wert"
                       className="w-24 rounded border border-zinc-800 bg-zinc-950 px-2 py-0.5 text-[11px] text-zinc-200 placeholder-zinc-600 outline-none focus:border-indigo-500"
                     />
-                    <button
-                      onClick={addFrontmatterProperty}
-                      className="rounded bg-zinc-800 p-1 text-zinc-300 hover:bg-indigo-600 hover:text-white"
-                    >
+                    <button onClick={addFrontmatterProperty} className="rounded bg-zinc-800 p-1 text-zinc-300 hover:bg-indigo-600 hover:text-white">
                       <Plus className="h-3 w-3" />
                     </button>
                   </div>
@@ -1892,10 +1053,8 @@ export function HybridEditor({
             {mode === "raw" ? (
               <textarea
                 value={rawMarkdown}
-                onChange={(e) => {
-                  setRawMarkdown(e.target.value);
-                  setDirty(true);
-                }}
+                onChange={(e) => { setRawMarkdown(e.target.value); setDirty(true); }}
+                onPaste={(e) => void handlePasteInRaw(e)}
                 spellCheck={false}
                 className="h-[62vh] w-full rounded-2xl border border-zinc-800 bg-zinc-900/60 p-5 font-mono text-xs leading-relaxed text-zinc-200 outline-none focus:border-indigo-500"
               />
@@ -1903,24 +1062,16 @@ export function HybridEditor({
               <div className="space-y-4">
                 {visibleIndices.map((idx) => {
                   const blk = blocks[idx];
-                  const relativeDepth = Math.max(
-                    0,
-                    blk.depth - zoomState.rootDepth,
-                  );
+                  const relativeDepth = Math.max(0, blk.depth - zoomState.rootDepth);
                   const isFindHit = matchingBlockIds.has(blk.id);
                   const isActiveHit = activeMatchBlockId === blk.id;
                   return (
                     <div
                       key={blk.id}
-                      ref={(el) => {
-                        blockWrapperRefs.current[blk.id] = el;
-                      }}
+                      ref={(el) => { blockWrapperRefs.current[blk.id] = el; }}
                       className={
-                        isActiveHit
-                          ? "rounded-xl ring-1 ring-amber-400/70 bg-amber-500/5 px-2 py-1"
-                          : isFindHit
-                            ? "rounded-xl bg-amber-500/5 px-2 py-1"
-                            : undefined
+                        isActiveHit ? "rounded-xl bg-amber-500/5 px-2 py-1 ring-1 ring-amber-400/70"
+                          : isFindHit ? "rounded-xl bg-amber-500/5 px-2 py-1" : undefined
                       }
                     >
                       <PreviewBlock
@@ -1939,18 +1090,12 @@ export function HybridEditor({
               <div className="space-y-1.5">
                 {visibleIndices.map((idx) => {
                   const blk = blocks[idx];
-                  const hasChildren =
-                    blocks[idx + 1] && blocks[idx + 1].depth > blk.depth;
+                  const hasChildren = blocks[idx + 1] && blocks[idx + 1].depth > blk.depth;
                   const inlineRefs = extractBlockRefs(blk.rawContent);
-                  const relativeDepth = Math.max(
-                    0,
-                    blk.depth - zoomState.rootDepth,
-                  );
+                  const inlineImages = extractImageEmbeds(blk.rawContent);
+                  const relativeDepth = Math.max(0, blk.depth - zoomState.rootDepth);
                   const isDragging = dragBlockId === blk.id;
-                  const isDragOver =
-                    dragOverBlockId === blk.id &&
-                    dragBlockId !== null &&
-                    dragBlockId !== blk.id;
+                  const isDragOver = dragOverBlockId === blk.id && dragBlockId !== null && dragBlockId !== blk.id;
                   const isFindHit = matchingBlockIds.has(blk.id);
                   const isActiveHit = activeMatchBlockId === blk.id;
                   const isMenuOpenForBlock = menu?.blockId === blk.id;
@@ -1958,40 +1103,29 @@ export function HybridEditor({
                   return (
                     <div
                       key={blk.id}
-                      ref={(el) => {
-                        blockWrapperRefs.current[blk.id] = el;
-                      }}
+                      ref={(el) => { blockWrapperRefs.current[blk.id] = el; }}
                       style={{ marginLeft: `${relativeDepth * 24}px` }}
                       onDragOver={(e) => {
                         if (!dragBlockId || dragBlockId === blk.id) return;
                         e.preventDefault();
                         e.dataTransfer.dropEffect = "move";
-                        if (dragOverBlockId !== blk.id) {
-                          setDragOverBlockId(blk.id);
-                        }
+                        if (dragOverBlockId !== blk.id) setDragOverBlockId(blk.id);
                       }}
-                      onDragLeave={() => {
-                        if (dragOverBlockId === blk.id) {
-                          setDragOverBlockId(null);
-                        }
-                      }}
+                      onDragLeave={() => { if (dragOverBlockId === blk.id) setDragOverBlockId(null); }}
                       onDrop={(e) => {
+                        if (!dragBlockId) return;
                         e.preventDefault();
-                        const src =
-                          e.dataTransfer.getData("text/plain") || dragBlockId;
-                        if (src) {
-                          reorderBlockByIds(src, blk.id);
-                        }
+                        e.stopPropagation();
+                        const src = e.dataTransfer.getData("text/plain") || dragBlockId;
+                        if (src) reorderBlockByIds(src, blk.id);
                         setDragBlockId(null);
                         setDragOverBlockId(null);
                       }}
                       className={`group relative rounded-xl border px-2 py-1 transition ${
                         isDragOver
-                          ? "border-t-2 border-t-indigo-500 border-x-zinc-800 border-b-zinc-800 bg-indigo-500/10"
-                          : isActiveHit
-                            ? "border-amber-400/70 bg-amber-500/10"
-                            : isFindHit
-                              ? "border-amber-500/30 bg-amber-500/5"
+                          ? "border-x-zinc-800 border-b-zinc-800 border-t-2 border-t-indigo-500 bg-indigo-500/10"
+                          : isActiveHit ? "border-amber-400/70 bg-amber-500/10"
+                            : isFindHit ? "border-amber-500/30 bg-amber-500/5"
                               : "border-transparent hover:border-zinc-800/90 hover:bg-zinc-900/35"
                       } ${isDragging ? "opacity-45" : ""}`}
                     >
@@ -2005,10 +1139,7 @@ export function HybridEditor({
                               e.dataTransfer.effectAllowed = "move";
                               e.dataTransfer.setData("text/plain", blk.id);
                             }}
-                            onDragEnd={() => {
-                              setDragBlockId(null);
-                              setDragOverBlockId(null);
-                            }}
+                            onDragEnd={() => { setDragBlockId(null); setDragOverBlockId(null); }}
                             title="Block per Drag & Drop verschieben"
                             className="cursor-grab rounded p-0.5 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200 active:cursor-grabbing"
                           >
@@ -2017,69 +1148,30 @@ export function HybridEditor({
 
                           {hasChildren && (
                             <button
-                              onClick={() =>
-                                updateBlock(blk.id, {
-                                  collapsed: !blk.collapsed,
-                                })
-                              }
-                              title={
-                                blk.collapsed ? "Ausklappen" : "Einklappen"
-                              }
+                              onClick={() => updateBlock(blk.id, { collapsed: !blk.collapsed })}
+                              title={blk.collapsed ? "Ausklappen" : "Einklappen"}
                               className="rounded p-0.5 hover:bg-zinc-800 hover:text-zinc-200"
                             >
-                              {blk.collapsed ? (
-                                <ChevronRight className="h-3.5 w-3.5" />
-                              ) : (
-                                <ChevronDown className="h-3.5 w-3.5" />
-                              )}
+                              {blk.collapsed ? <ChevronRight className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
                             </button>
                           )}
 
                           <span className="rounded bg-zinc-900 px-1.5 py-0.5 font-mono text-[10px] text-zinc-400">
-                            {blk.blockType}
-                            {blk.headingLevel ? ` H${blk.headingLevel}` : ""}
+                            {blk.blockType}{blk.headingLevel ? ` H${blk.headingLevel}` : ""}
                           </span>
-
-                          <button
-                            onClick={() => setZoomBlockId(blk.id)}
-                            title="In diesen Block hineinzoomen (Hoisting)"
-                            className="rounded p-0.5 hover:bg-indigo-500/20 hover:text-indigo-300"
-                          >
+                          <button onClick={() => setZoomBlockId(blk.id)} title="In diesen Block hineinzoomen (Hoisting)" className="rounded p-0.5 hover:bg-indigo-500/20 hover:text-indigo-300">
                             <ZoomIn className="h-3 w-3" />
                           </button>
-
-                          <button
-                            onClick={() => moveBlock(idx, -1)}
-                            title="Block nach oben"
-                            className="rounded p-0.5 hover:bg-zinc-800 hover:text-zinc-200"
-                          >
+                          <button onClick={() => moveBlock(idx, -1)} title="Block nach oben" className="rounded p-0.5 hover:bg-zinc-800 hover:text-zinc-200">
                             <ArrowUp className="h-3 w-3" />
                           </button>
-                          <button
-                            onClick={() => moveBlock(idx, 1)}
-                            title="Block nach unten"
-                            className="rounded p-0.5 hover:bg-zinc-800 hover:text-zinc-200"
-                          >
+                          <button onClick={() => moveBlock(idx, 1)} title="Block nach unten" className="rounded p-0.5 hover:bg-zinc-800 hover:text-zinc-200">
                             <ArrowDown className="h-3 w-3" />
                           </button>
-                          <button
-                            onClick={() =>
-                              updateBlock(blk.id, {
-                                depth: Math.max(0, blk.depth - 1),
-                              })
-                            }
-                            title="Ausrücken (Shift+Tab)"
-                            className="rounded p-0.5 hover:bg-zinc-800 hover:text-zinc-200"
-                          >
+                          <button onClick={() => updateBlock(blk.id, { depth: Math.max(0, blk.depth - 1) })} title="Ausrücken (Shift+Tab)" className="rounded p-0.5 hover:bg-zinc-800 hover:text-zinc-200">
                             <Outdent className="h-3 w-3" />
                           </button>
-                          <button
-                            onClick={() =>
-                              updateBlock(blk.id, { depth: blk.depth + 1 })
-                            }
-                            title="Einrücken (Tab)"
-                            className="rounded p-0.5 hover:bg-zinc-800 hover:text-zinc-200"
-                          >
+                          <button onClick={() => updateBlock(blk.id, { depth: blk.depth + 1 })} title="Einrücken (Tab)" className="rounded p-0.5 hover:bg-zinc-800 hover:text-zinc-200">
                             <Indent className="h-3 w-3" />
                           </button>
                         </div>
@@ -2091,35 +1183,15 @@ export function HybridEditor({
                             className="flex items-center gap-1 rounded bg-zinc-900 px-1.5 py-0.5 font-mono text-[10px] text-zinc-400 hover:bg-indigo-500/20 hover:text-indigo-300"
                           >
                             {copiedId === blk.id ? (
-                              <>
-                                <Check className="h-2.5 w-2.5 text-emerald-400" />
-                                <span className="text-emerald-300">
-                                  Kopiert
-                                </span>
-                              </>
+                              <><Check className="h-2.5 w-2.5 text-emerald-400" /><span className="text-emerald-300">Kopiert</span></>
                             ) : (
-                              <>
-                                <Copy className="h-2.5 w-2.5" />
-                                <span>
-                                  {blk.hasExplicitId
-                                    ? `^${blk.id}`
-                                    : `((${blk.id}))`}
-                                </span>
-                              </>
+                              <><Copy className="h-2.5 w-2.5" /><span>{blk.hasExplicitId ? `^${blk.id}` : `((${blk.id}))`}</span></>
                             )}
                           </button>
-                          <button
-                            onClick={() => insertBlockAfter(idx, blk.depth)}
-                            title="Block darunter einfügen"
-                            className="rounded p-0.5 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200"
-                          >
+                          <button onClick={() => insertBlockAfter(idx, blk.depth)} title="Block darunter einfügen" className="rounded p-0.5 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200">
                             <Plus className="h-3.5 w-3.5" />
                           </button>
-                          <button
-                            onClick={() => removeBlock(idx)}
-                            title="Block entfernen"
-                            className="rounded p-0.5 text-zinc-500 hover:bg-rose-500/20 hover:text-rose-300"
-                          >
+                          <button onClick={() => removeBlock(idx)} title="Block entfernen" className="rounded p-0.5 text-zinc-500 hover:bg-rose-500/20 hover:text-rose-300">
                             <Trash2 className="h-3 w-3" />
                           </button>
                         </div>
@@ -2143,325 +1215,48 @@ export function HybridEditor({
                           <hr className="my-3 w-full border-zinc-800" />
                         ) : (
                           <textarea
-                            ref={(el) => {
-                              blockRefs.current[blk.id] = el;
-                              autoResizeTextarea(el);
-                            }}
+                            ref={(el) => { blockRefs.current[blk.id] = el; autoResizeTextarea(el); }}
                             value={blk.rawContent}
                             rows={1}
                             onFocus={() => setActiveBlockId(blk.id)}
+                            onPaste={(e) => void handlePasteInBlock(blk.id, e)}
                             onChange={(e) =>
-                              handleContentChange(
-                                blk,
-                                e.target.value,
-                                e.target.selectionStart ?? e.target.value.length,
-                                e.target,
-                              )
+                              handleContentChange(blk, e.target.value, e.target.selectionStart ?? e.target.value.length, e.target)
                             }
-                            onKeyDown={(e) => {
-                              // Autocomplete menu keyboard controls
-                              if (isMenuOpenForBlock && menu) {
-                                if (e.key === "Escape") {
-                                  e.preventDefault();
-                                  setMenu(null);
-                                  return;
-                                }
-                                if (activeMenuCount > 0) {
-                                  if (e.key === "ArrowDown") {
-                                    e.preventDefault();
-                                    setMenuIndex(
-                                      (i) => (i + 1) % activeMenuCount,
-                                    );
-                                    return;
-                                  }
-                                  if (e.key === "ArrowUp") {
-                                    e.preventDefault();
-                                    setMenuIndex(
-                                      (i) =>
-                                        (i - 1 + activeMenuCount) %
-                                        activeMenuCount,
-                                    );
-                                    return;
-                                  }
-                                  if (e.key === "Enter" && !e.shiftKey) {
-                                    e.preventDefault();
-                                    const safeIdx = Math.min(
-                                      menuIndex,
-                                      activeMenuCount - 1,
-                                    );
-                                    if (menu.kind === "slash") {
-                                      const opt = filteredSlashOptions[safeIdx];
-                                      if (opt) applySlashOption(blk, opt);
-                                    } else if (menu.kind === "wiki") {
-                                      const doc = filteredWikiDocs[safeIdx];
-                                      if (doc) applyWikiSuggestion(blk, doc);
-                                    } else if (menu.kind === "blockRef") {
-                                      const cand = filteredBlockRefs[safeIdx];
-                                      if (cand)
-                                        applyBlockRefSuggestion(blk, cand);
-                                    }
-                                    return;
-                                  }
-                                }
-                              }
-
-                              // ArrowUp / ArrowDown navigation between visible blocks
-                              const el = e.currentTarget;
-                              if (
-                                e.key === "ArrowUp" &&
-                                !e.shiftKey &&
-                                !e.altKey &&
-                                !e.ctrlKey &&
-                                !e.metaKey &&
-                                el.selectionStart === 0 &&
-                                el.selectionEnd === 0
-                              ) {
-                                e.preventDefault();
-                                focusAdjacentVisibleBlock(idx, -1);
-                                return;
-                              }
-                              if (
-                                e.key === "ArrowDown" &&
-                                !e.shiftKey &&
-                                !e.altKey &&
-                                !e.ctrlKey &&
-                                !e.metaKey &&
-                                el.selectionStart === el.value.length &&
-                                el.selectionEnd === el.value.length
-                              ) {
-                                e.preventDefault();
-                                focusAdjacentVisibleBlock(idx, 1);
-                                return;
-                              }
-
-                              if (e.key === "Tab") {
-                                e.preventDefault();
-                                updateBlock(blk.id, {
-                                  depth: e.shiftKey
-                                    ? Math.max(0, blk.depth - 1)
-                                    : blk.depth + 1,
-                                });
-                              } else if (
-                                e.key === "Backspace" &&
-                                blk.rawContent === "" &&
-                                blocks.length > 1 &&
-                                idx > 0
-                              ) {
-                                e.preventDefault();
-                                const prevId = blocks[idx - 1].id;
-                                removeBlock(idx);
-                                setPendingFocus({
-                                  blockId: prevId,
-                                  position: "end",
-                                });
-                              } else if (
-                                e.key === "Enter" &&
-                                !e.shiftKey &&
-                                blk.blockType !== "codeBlock" &&
-                                blk.blockType !== "callout"
-                              ) {
-                                e.preventDefault();
-                                insertBlockAfter(
-                                  idx,
-                                  blk.depth,
-                                  blk.blockType === "listItem" ||
-                                    blk.blockType === "taskItem"
-                                    ? blk.blockType
-                                    : "paragraph",
-                                );
-                              }
-                            }}
-                            placeholder="Tippe `/` für Blocktypen, `[[` für Wiki-Links oder `((` für Block-Refs..."
-                            className={`w-full resize-none overflow-hidden bg-transparent outline-none placeholder-zinc-600 ${
-                              blk.blockType === "heading"
-                                ? blk.headingLevel === 1
-                                  ? "text-2xl font-bold text-zinc-50"
-                                  : blk.headingLevel === 2
-                                    ? "text-xl font-semibold text-zinc-100"
-                                    : "text-base font-semibold text-zinc-200"
-                                : blk.blockType === "codeBlock"
-                                  ? "rounded-xl border border-zinc-800 bg-zinc-900/90 p-3 font-mono text-xs text-emerald-300"
-                                  : blk.blockType === "callout"
-                                    ? "rounded-xl border border-indigo-500/30 bg-indigo-500/10 p-3 text-sm text-indigo-100"
-                                    : blk.blockType === "quote"
-                                      ? "border-l-2 border-indigo-500 pl-3 text-sm italic text-zinc-300"
-                                      : "text-sm leading-relaxed text-zinc-200"
-                            }`}
+                            onKeyDown={(e) => handleBlockKeyDown(blk, idx, e)}
+                            placeholder="Tippe `/` für Blocktypen, `[[` für Wiki-Links, `((` für Block-Refs oder füge Bilder per Strg+V ein..."
+                            className={getBlockTextareaClassName(blk)}
                           />
                         )}
                       </div>
 
-                      {/* Keyboard-Driven Slash Command Menu */}
-                      {isMenuOpenForBlock && menu.kind === "slash" && (
-                        <div className="mt-1.5 rounded-xl border border-zinc-700 bg-zinc-900 p-2 shadow-xl">
-                          <div className="mb-1.5 flex items-center justify-between px-1 text-[10px] uppercase text-zinc-500">
-                            <span>
-                              Blocktyp wählen{" "}
-                              {menu.query ? `• Filter: /${menu.query}` : ""}
-                            </span>
-                            <span className="font-mono">↑↓ Enter Esc</span>
-                          </div>
-                          {filteredSlashOptions.length === 0 ? (
-                            <div className="px-2 py-1.5 text-xs text-zinc-500">
-                              Kein passender Blocktyp für „/{menu.query}“.
-                            </div>
-                          ) : (
-                            <div className="grid grid-cols-2 gap-1 sm:grid-cols-3">
-                              {filteredSlashOptions.map((opt, optIdx) => {
-                                const selected = optIdx === menuIndex;
-                                return (
-                                  <button
-                                    key={opt.label}
-                                    onMouseDown={(e) => e.preventDefault()}
-                                    onMouseEnter={() => setMenuIndex(optIdx)}
-                                    onClick={() => applySlashOption(blk, opt)}
-                                    className={`flex items-center gap-1.5 rounded-lg px-2 py-1.5 text-left text-xs transition ${
-                                      selected
-                                        ? "bg-indigo-600/35 text-white ring-1 ring-indigo-500/50"
-                                        : "text-zinc-200 hover:bg-zinc-800"
-                                    }`}
-                                  >
-                                    {opt.type === "heading" ? (
-                                      <Heading1 className="h-3.5 w-3.5 text-indigo-400" />
-                                    ) : opt.type === "taskItem" ? (
-                                      <CheckSquare className="h-3.5 w-3.5 text-emerald-400" />
-                                    ) : opt.type === "listItem" ? (
-                                      <List className="h-3.5 w-3.5 text-sky-400" />
-                                    ) : opt.type === "codeBlock" ? (
-                                      <Code2 className="h-3.5 w-3.5 text-amber-400" />
-                                    ) : opt.type === "quote" ? (
-                                      <Quote className="h-3.5 w-3.5 text-zinc-400" />
-                                    ) : opt.type === "divider" ? (
-                                      <Minus className="h-3.5 w-3.5 text-zinc-500" />
-                                    ) : (
-                                      <Sparkles className="h-3.5 w-3.5 text-indigo-400" />
-                                    )}
-                                    <span>{opt.label}</span>
-                                  </button>
-                                );
-                              })}
-                            </div>
-                          )}
+                      {isMenuOpenForBlock && menu && (
+                        <AutocompleteMenu
+                          menu={menu}
+                          menuIndex={menuIndex}
+                          onSelectIndex={setMenuIndex}
+                          slashOptions={filteredSlashOptions}
+                          wikiDocs={filteredWikiDocs}
+                          blockRefs={filteredBlockRefs}
+                          onApplySlash={(opt) => applySlashOption(blk, opt)}
+                          onApplyWiki={(doc) => applyWikiSuggestion(blk, doc)}
+                          onApplyBlockRef={(cand) => applyBlockRefSuggestion(blk, cand)}
+                        />
+                      )}
+
+                      {inlineImages.length > 0 && (
+                        <div className="mt-1.5 flex flex-wrap gap-2">
+                          {inlineImages.map((img, imgIdx) => (
+                            <AssetImagePreview key={`${img.path}-${imgIdx}`} path={img.path} alt={img.alt} compact />
+                          ))}
                         </div>
                       )}
 
-                      {/* Keyboard-Driven Wiki-Link Autocomplete */}
-                      {isMenuOpenForBlock && menu.kind === "wiki" && (
-                        <div className="mt-1.5 max-h-48 overflow-y-auto rounded-xl border border-zinc-700 bg-zinc-900 p-1.5 shadow-xl">
-                          <div className="flex items-center justify-between px-2 py-1 text-[10px] uppercase text-zinc-500">
-                            <span>
-                              Wiki-Link einfügen{" "}
-                              {menu.query ? `• Filter: ${menu.query}` : ""}
-                            </span>
-                            <span className="font-mono">↑↓ Enter Esc</span>
-                          </div>
-                          {filteredWikiDocs.length === 0 ? (
-                            <div className="px-2.5 py-1.5 text-xs text-zinc-500">
-                              Keine passende Notiz gefunden.
-                            </div>
-                          ) : (
-                            filteredWikiDocs.map((d, dIdx) => {
-                              const selected = dIdx === menuIndex;
-                              return (
-                                <button
-                                  key={d.id}
-                                  onMouseDown={(e) => e.preventDefault()}
-                                  onMouseEnter={() => setMenuIndex(dIdx)}
-                                  onClick={() => applyWikiSuggestion(blk, d)}
-                                  className={`flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-left text-xs transition ${
-                                    selected
-                                      ? "bg-indigo-600/35 text-white ring-1 ring-indigo-500/50"
-                                      : "text-zinc-200 hover:bg-zinc-800"
-                                  }`}
-                                >
-                                  <span className="truncate font-medium">
-                                    {d.title}
-                                  </span>
-                                  <span className="ml-2 shrink-0 text-[10px] text-zinc-500">
-                                    {d.path}
-                                  </span>
-                                </button>
-                              );
-                            })
-                          )}
-                        </div>
-                      )}
-
-                      {/* Keyboard-Driven Block-Ref Autocomplete */}
-                      {isMenuOpenForBlock && menu.kind === "blockRef" && (
-                        <div className="mt-1.5 max-h-52 overflow-y-auto rounded-xl border border-zinc-700 bg-zinc-900 p-1.5 shadow-xl">
-                          <div className="flex items-center justify-between px-2 py-1 text-[10px] uppercase text-zinc-500">
-                            <span>
-                              Block-Referenz einfügen{" "}
-                              {menu.query ? `• Filter: ${menu.query}` : ""}
-                            </span>
-                            <span className="font-mono">↑↓ Enter Esc</span>
-                          </div>
-                          {filteredBlockRefs.length === 0 ? (
-                            <div className="px-2.5 py-1.5 text-xs text-zinc-500">
-                              Kein passender Block gefunden.
-                            </div>
-                          ) : (
-                            filteredBlockRefs.map((cand, cIdx) => {
-                              const selected = cIdx === menuIndex;
-                              return (
-                                <button
-                                  key={`${cand.blockId}-${cIdx}`}
-                                  onMouseDown={(e) => e.preventDefault()}
-                                  onMouseEnter={() => setMenuIndex(cIdx)}
-                                  onClick={() =>
-                                    applyBlockRefSuggestion(blk, cand)
-                                  }
-                                  className={`flex w-full flex-col gap-0.5 rounded-lg px-2.5 py-1.5 text-left text-xs transition ${
-                                    selected
-                                      ? "bg-amber-500/25 text-white ring-1 ring-amber-400/50"
-                                      : "text-zinc-200 hover:bg-zinc-800"
-                                  }`}
-                                >
-                                  <div className="flex items-center justify-between gap-2">
-                                    <span className="font-mono text-[10px] text-amber-300">
-                                      (({cand.blockId}))
-                                    </span>
-                                    <span className="truncate text-[10px] text-zinc-500">
-                                      {cand.isLocal
-                                        ? "Dieses Dokument"
-                                        : cand.docTitle}
-                                    </span>
-                                  </div>
-                                  <span className="line-clamp-1 text-[11px] text-zinc-300">
-                                    {cand.preview}
-                                  </span>
-                                </button>
-                              );
-                            })
-                          )}
-                        </div>
-                      )}
-
-                      {/* Live Embedded Block Transclusions `((block-id))` */}
                       {inlineRefs.map((refId) => {
                         const target = transclusions[refId];
-                        if (!target) return null;
-                        return (
-                          <div
-                            key={refId}
-                            onClick={() => onNavigate(target.docPath)}
-                            className="mt-2 cursor-pointer rounded-xl border border-amber-500/30 bg-amber-500/5 p-3 transition hover:border-amber-400/60"
-                          >
-                            <div className="mb-1 flex items-center justify-between text-[11px] text-amber-300">
-                              <span className="flex items-center gap-1.5 font-semibold">
-                                <Sparkles className="h-3 w-3" />
-                                Live Block-Transklusion (({refId}))
-                              </span>
-                              <span className="text-zinc-400">
-                                aus {target.docTitle} →
-                              </span>
-                            </div>
-                            <p className="text-xs leading-relaxed text-zinc-200">
-                              {target.block.plainText}
-                            </p>
-                          </div>
-                        );
+                        return target ? (
+                          <TransclusionCard key={refId} refId={refId} target={target} onNavigate={onNavigate} compact />
+                        ) : null;
                       })}
                     </div>
                   );
@@ -2490,9 +1285,7 @@ export function HybridEditor({
                 docTitle={docBundle.document.title}
                 onMentionLinked={async () => {
                   await loadBacklinks(docBundle.document.id);
-                  const fresh = await vaultApi
-                    .getDocument(docBundle.document.path)
-                    .catch(() => null);
+                  const fresh = await vaultApi.getDocument(docBundle.document.path).catch(() => null);
                   if (fresh) await onSaved(fresh);
                 }}
               />
@@ -2500,7 +1293,6 @@ export function HybridEditor({
           </div>
         </div>
 
-        {/* Optional Outline Panel */}
         {showOutline && !effectiveZenMode && (
           <OutlinePanel
             blocks={blocks}
@@ -2511,435 +1303,17 @@ export function HybridEditor({
         )}
       </div>
 
-      {/* History Modal */}
       <HistoryModal
         isOpen={historyOpen}
         docPath={docBundle.document.path}
         currentMarkdown={
-          mode === "raw"
-            ? rawMarkdown
-            : dirty
-              ? serializeBlocksToCleanMarkdown(blocks, frontmatter)
+          mode === "raw" ? rawMarkdown
+            : dirty ? serializeBlocksToCleanMarkdown(blocks, frontmatter)
               : docBundle.rawMarkdown
         }
         onClose={() => setHistoryOpen(false)}
-        onRestored={async (restoredDoc) => {
-          await onSaved(restoredDoc);
-        }}
+        onRestored={async (restoredDoc) => { await onSaved(restoredDoc); }}
       />
     </div>
   );
-}
-
-const CALLOUT_STYLES: Record<
-  CalloutKind,
-  {
-    container: string;
-    badge: string;
-    title: string;
-  }
-> = {
-  NOTE: {
-    container: "border-indigo-500/35 bg-indigo-500/10 text-indigo-100",
-    badge: "bg-indigo-500/25 text-indigo-200",
-    title: "text-indigo-200",
-  },
-  INFO: {
-    container: "border-sky-500/35 bg-sky-500/10 text-sky-100",
-    badge: "bg-sky-500/25 text-sky-200",
-    title: "text-sky-200",
-  },
-  TIP: {
-    container: "border-emerald-500/35 bg-emerald-500/10 text-emerald-100",
-    badge: "bg-emerald-500/25 text-emerald-200",
-    title: "text-emerald-200",
-  },
-  IMPORTANT: {
-    container: "border-violet-500/35 bg-violet-500/10 text-violet-100",
-    badge: "bg-violet-500/25 text-violet-200",
-    title: "text-violet-200",
-  },
-  WARNING: {
-    container: "border-amber-500/40 bg-amber-500/10 text-amber-100",
-    badge: "bg-amber-500/25 text-amber-200",
-    title: "text-amber-200",
-  },
-  CAUTION: {
-    container: "border-rose-500/40 bg-rose-500/10 text-rose-100",
-    badge: "bg-rose-500/25 text-rose-200",
-    title: "text-rose-200",
-  },
-};
-
-function CalloutIcon({ kind }: { kind: CalloutKind }) {
-  switch (kind) {
-    case "TIP":
-      return <Lightbulb className="h-3.5 w-3.5 text-emerald-400" />;
-    case "IMPORTANT":
-      return <Sparkles className="h-3.5 w-3.5 text-violet-400" />;
-    case "WARNING":
-      return <AlertTriangle className="h-3.5 w-3.5 text-amber-400" />;
-    case "CAUTION":
-      return <Flame className="h-3.5 w-3.5 text-rose-400" />;
-    case "INFO":
-      return <Info className="h-3.5 w-3.5 text-sky-400" />;
-    case "NOTE":
-    default:
-      return <Info className="h-3.5 w-3.5 text-indigo-400" />;
-  }
-}
-
-function CodeBlockPreview({ block }: { block: Block }) {
-  const [copied, setCopied] = useState(false);
-  const lang = block.codeLang?.trim() || "text";
-
-  const handleCopy = () => {
-    void navigator.clipboard?.writeText(block.rawContent).catch(() => {});
-    setCopied(true);
-    window.setTimeout(() => setCopied(false), 1800);
-  };
-
-  return (
-    <div className="overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900">
-      <div className="flex items-center justify-between border-b border-zinc-800/80 bg-zinc-950/60 px-3.5 py-1.5">
-        <span className="rounded bg-zinc-800 px-2 py-0.5 font-mono text-[10px] uppercase tracking-wider text-zinc-300">
-          {lang}
-        </span>
-        <button
-          onClick={handleCopy}
-          className="flex items-center gap-1 rounded-md px-2 py-0.5 text-[11px] text-zinc-400 transition hover:bg-zinc-800 hover:text-zinc-100"
-        >
-          {copied ? (
-            <>
-              <Check className="h-3 w-3 text-emerald-400" />
-              <span className="text-emerald-300">Kopiert</span>
-            </>
-          ) : (
-            <>
-              <Copy className="h-3 w-3" />
-              <span>Kopieren</span>
-            </>
-          )}
-        </button>
-      </div>
-      <pre className="overflow-x-auto p-4 font-mono text-xs leading-relaxed text-emerald-300">
-        {block.rawContent}
-      </pre>
-    </div>
-  );
-}
-
-function WikiLinkPreviewChip({
-  target,
-  alias,
-  onNavigate,
-  loadHoverPreview,
-}: {
-  target: string;
-  alias: string | null;
-  onNavigate: (target: string) => void;
-  loadHoverPreview: (target: string) => Promise<HoverDocPreview | "not_found">;
-}) {
-  const [open, setOpen] = useState(false);
-  const [loading, setLoading] = useState(false);
-  const [preview, setPreview] = useState<HoverDocPreview | "not_found" | null>(
-    null,
-  );
-  const timerRef = useRef<number | null>(null);
-
-  useEffect(() => {
-    return () => {
-      if (timerRef.current !== null) {
-        window.clearTimeout(timerRef.current);
-      }
-    };
-  }, []);
-
-  const handleMouseEnter = () => {
-    if (timerRef.current !== null) window.clearTimeout(timerRef.current);
-    timerRef.current = window.setTimeout(() => {
-      setOpen(true);
-      if (preview === null) {
-        setLoading(true);
-        void loadHoverPreview(target)
-          .then(setPreview)
-          .finally(() => setLoading(false));
-      }
-    }, 180);
-  };
-
-  const handleMouseLeave = () => {
-    if (timerRef.current !== null) {
-      window.clearTimeout(timerRef.current);
-      timerRef.current = null;
-    }
-    setOpen(false);
-  };
-
-  return (
-    <span
-      className="relative inline-block"
-      onMouseEnter={handleMouseEnter}
-      onMouseLeave={handleMouseLeave}
-    >
-      <button
-        onClick={() => onNavigate(target)}
-        className="mx-0.5 inline rounded bg-indigo-500/15 px-1.5 py-0.5 font-medium text-indigo-300 underline decoration-indigo-500/40 underline-offset-2 hover:bg-indigo-500/25"
-      >
-        {alias ?? target}
-      </button>
-
-      {open && (
-        <div className="pointer-events-none absolute left-0 bottom-full z-40 mb-2 w-72 rounded-xl border border-zinc-700/90 bg-zinc-900/95 p-3 text-left shadow-2xl backdrop-blur-xs">
-          {loading ? (
-            <div className="text-[11px] text-zinc-400">
-              Lade Vorschau für „{target}“...
-            </div>
-          ) : preview === "not_found" || preview === null ? (
-            <div className="space-y-1">
-              <div className="text-xs font-semibold text-indigo-300">
-                {target}
-              </div>
-              <p className="text-[11px] text-zinc-400">
-                Notiz existiert noch nicht — klicken zum Erstellen.
-              </p>
-            </div>
-          ) : (
-            <div className="space-y-1.5">
-              <div className="flex items-center justify-between gap-2">
-                <span className="truncate text-xs font-semibold text-zinc-100">
-                  {preview.title}
-                </span>
-              </div>
-              <div className="truncate font-mono text-[10px] text-zinc-500">
-                {preview.path}
-              </div>
-              {preview.tags.length > 0 && (
-                <div className="flex flex-wrap gap-1">
-                  {preview.tags.slice(0, 4).map((t) => (
-                    <span
-                      key={t}
-                      className="rounded-full bg-indigo-500/15 px-1.5 py-0.5 text-[9px] text-indigo-300"
-                    >
-                      #{t}
-                    </span>
-                  ))}
-                </div>
-              )}
-              <p className="line-clamp-4 text-[11px] leading-relaxed text-zinc-300">
-                {preview.snippet}
-              </p>
-            </div>
-          )}
-        </div>
-      )}
-    </span>
-  );
-}
-
-function PreviewBlock({
-  block,
-  relativeDepth,
-  transclusions,
-  onNavigate,
-  onToggleTask,
-  loadHoverPreview,
-}: {
-  block: Block;
-  relativeDepth: number;
-  transclusions: Record<string, BlockLookup>;
-  onNavigate: (target: string) => void;
-  onToggleTask: () => void;
-  loadHoverPreview: (target: string) => Promise<HoverDocPreview | "not_found">;
-}) {
-  const inlineRefs = extractBlockRefs(block.rawContent);
-
-  if (block.blockType === "divider") {
-    return <hr className="my-4 border-zinc-800" />;
-  }
-  if (block.blockType === "codeBlock") {
-    return (
-      <div style={{ marginLeft: `${relativeDepth * 24}px` }}>
-        <CodeBlockPreview block={block} />
-      </div>
-    );
-  }
-  if (block.blockType === "heading") {
-    const cls =
-      block.headingLevel === 1
-        ? "text-2xl font-bold text-zinc-50 pt-2"
-        : block.headingLevel === 2
-          ? "text-xl font-semibold text-zinc-100 pt-2"
-          : "text-base font-semibold text-zinc-200 pt-1";
-    return (
-      <div className={cls} style={{ marginLeft: `${relativeDepth * 24}px` }}>
-        {renderRichText(block.rawContent, onNavigate, loadHoverPreview)}
-      </div>
-    );
-  }
-
-  return (
-    <div style={{ marginLeft: `${relativeDepth * 24}px` }} className="space-y-2">
-      {block.blockType === "callout" ? (
-        (() => {
-          const parsed = parseCalloutHeader(block.rawContent);
-          const style = CALLOUT_STYLES[parsed.kind];
-          return (
-            <div className={`rounded-xl border p-4 text-sm ${style.container}`}>
-              <div className="mb-1.5 flex items-center gap-2">
-                <CalloutIcon kind={parsed.kind} />
-                <span
-                  className={`rounded-full px-2 py-0.5 font-mono text-[10px] font-semibold tracking-wide ${style.badge}`}
-                >
-                  {parsed.kind}
-                </span>
-                <span className={`font-semibold ${style.title}`}>
-                  {parsed.title}
-                </span>
-              </div>
-              {parsed.body && (
-                <div className="space-y-1 text-sm leading-relaxed">
-                  {parsed.body.split("\n").map((line, i) => (
-                    <p key={i}>
-                      {renderRichText(line, onNavigate, loadHoverPreview)}
-                    </p>
-                  ))}
-                </div>
-              )}
-            </div>
-          );
-        })()
-      ) : block.blockType === "quote" ? (
-        <blockquote className="border-l-2 border-indigo-500 pl-4 text-sm italic text-zinc-300">
-          {renderRichText(block.rawContent, onNavigate, loadHoverPreview)}
-        </blockquote>
-      ) : block.blockType === "taskItem" ? (
-        <div className="flex items-start gap-2.5 text-sm text-zinc-200">
-          <button
-            onClick={onToggleTask}
-            className="mt-0.5 rounded border border-zinc-700 bg-zinc-900 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-indigo-300"
-          >
-            {block.task?.status ?? "TODO"}
-          </button>
-          <span
-            className={
-              block.task?.status === "DONE" ? "text-zinc-500 line-through" : ""
-            }
-          >
-            {renderRichText(block.rawContent, onNavigate, loadHoverPreview)}
-          </span>
-        </div>
-      ) : block.blockType === "listItem" ? (
-        <div className="flex items-start gap-2.5 text-sm text-zinc-200">
-          <span className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-indigo-400" />
-          <div>
-            {renderRichText(block.rawContent, onNavigate, loadHoverPreview)}
-          </div>
-        </div>
-      ) : (
-        <p className="text-sm leading-relaxed text-zinc-200">
-          {renderRichText(block.rawContent, onNavigate, loadHoverPreview)}
-        </p>
-      )}
-
-      {inlineRefs.map((refId) => {
-        const target = transclusions[refId];
-        if (!target) return null;
-        return (
-          <div
-            key={refId}
-            onClick={() => onNavigate(target.docPath)}
-            className="cursor-pointer rounded-xl border border-amber-500/30 bg-amber-500/5 p-3.5 transition hover:border-amber-400/60"
-          >
-            <div className="mb-1 flex items-center justify-between text-[11px] text-amber-300">
-              <span className="flex items-center gap-1.5 font-semibold">
-                <Sparkles className="h-3 w-3" />
-                Live Block-Transklusion (({refId}))
-              </span>
-              <span className="text-zinc-400">aus {target.docTitle} →</span>
-            </div>
-            <p className="text-xs leading-relaxed text-zinc-200">
-              {target.block.plainText}
-            </p>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-function renderRichText(
-  text: string,
-  onNavigate: (target: string) => void,
-  loadHoverPreview: (target: string) => Promise<HoverDocPreview | "not_found">,
-): React.ReactNode {
-  const cleaned = stripExplicitBlockIds(text);
-  const tokens = parseInlineTokens(cleaned);
-
-  return tokens.map((tok, idx) => {
-    switch (tok.type) {
-      case "wikiLink":
-        return (
-          <WikiLinkPreviewChip
-            key={idx}
-            target={tok.target}
-            alias={tok.alias}
-            onNavigate={onNavigate}
-            loadHoverPreview={loadHoverPreview}
-          />
-        );
-      case "blockRef":
-        return (
-          <span
-            key={idx}
-            className="mx-0.5 rounded bg-amber-500/15 px-1.5 py-0.5 font-mono text-xs text-amber-300"
-          >
-            (({tok.blockId}))
-          </span>
-        );
-      case "bold":
-        return (
-          <strong key={idx} className="font-semibold text-zinc-50">
-            {tok.text}
-          </strong>
-        );
-      case "italic":
-        return (
-          <em key={idx} className="italic text-zinc-100">
-            {tok.text}
-          </em>
-        );
-      case "strike":
-        return (
-          <del key={idx} className="text-zinc-500 line-through">
-            {tok.text}
-          </del>
-        );
-      case "code":
-        return (
-          <code
-            key={idx}
-            className="mx-0.5 rounded border border-zinc-800 bg-zinc-900 px-1.5 py-0.5 font-mono text-[12px] text-emerald-300"
-          >
-            {tok.text}
-          </code>
-        );
-      case "externalLink":
-        return (
-          <a
-            key={idx}
-            href={tok.url}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="mx-0.5 inline-flex items-center gap-0.5 text-sky-400 underline decoration-sky-500/40 underline-offset-2 hover:text-sky-300"
-          >
-            <span>{tok.label}</span>
-            <ExternalLink className="h-3 w-3 shrink-0" />
-          </a>
-        );
-      case "text":
-      default:
-        return <span key={idx}>{tok.text}</span>;
-    }
-  });
 }

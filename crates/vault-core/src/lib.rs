@@ -1,12 +1,19 @@
+pub mod assets;
 pub mod canvas;
 pub mod db;
 pub mod demo;
+pub mod frontmatter;
 pub mod fs_utils;
 pub mod graph;
 pub mod model;
 pub mod parser;
+pub mod recurrence;
 pub mod sync;
+pub mod trash;
 pub mod watcher;
+
+pub use crate::frontmatter::rewrite_wiki_links_in_markdown;
+pub use crate::recurrence::compute_next_recurrence_date;
 
 use crate::canvas::{
     create_canvas as create_canvas_file, delete_canvas as delete_canvas_file, list_canvas_files,
@@ -14,7 +21,8 @@ use crate::canvas::{
 };
 use crate::db::{find_unlinked_word_boundary_match, now_unix, Database};
 use crate::demo::seed_demo_vault;
-use crate::fs_utils::{atomic_write, normalize_safe_md_path};
+use crate::frontmatter::upsert_frontmatter_property;
+use crate::fs_utils::{atomic_write, normalize_safe_md_path, path_stem_str};
 use crate::graph::{build_graph_snapshot, find_shortest_path};
 use crate::model::{
     BacklinkItem, BenchmarkReport, Block, BlockLookup, CanvasData, DatabaseQuery,
@@ -24,15 +32,15 @@ use crate::model::{
     TrashItem, UnlinkedMention, VaultAnalytics, VaultOverview,
 };
 use crate::parser::{parse_markdown_document, serialize_document_to_markdown};
+use crate::recurrence::build_next_recurring_task_block;
 use crate::sync::CrdtSyncEngine;
 use anyhow::{anyhow, Context, Result};
-use chrono::{Days, Local, Months, NaiveDate};
+use chrono::Local;
 use rayon::prelude::*;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 use tempfile::tempdir;
-use uuid::Uuid;
 use walkdir::WalkDir;
 
 /// High-level facade coordinating the Cloud-safe Vault files, the local SQLite turbo-index,
@@ -119,7 +127,7 @@ impl VaultEngine {
         let db_size_bytes = fs::metadata(&self.db_path).map(|m| m.len()).unwrap_or(0);
         let canvas_files = list_canvas_files(&self.vault_path)?;
         let sync_status = self.sync.inspect_status(&self.vault_path)?;
-        let trash_count = self.list_trash()?.len();
+        let trash_count = trash::trash_count(&self.vault_path)?;
 
         Ok(VaultOverview {
             vault_path: self.vault_path.to_string_lossy().to_string(),
@@ -242,28 +250,7 @@ impl VaultEngine {
             .map(|(doc, _)| doc.title)
             .unwrap_or_else(|| path_stem_str(&clean_rel));
 
-        if abs.exists() {
-            let content = fs::read(&abs)
-                .with_context(|| format!("Konnte {} nicht für Papierkorb lesen", abs.display()))?;
-            let size_bytes = content.len() as u64;
-            let deleted_at = now_unix();
-            let trash_id = format!("trash-{}-{}", deleted_at, &Uuid::new_v4().to_string()[..8]);
-            let trash_dir = self.vault_path.join(".trash");
-            let trash_file = trash_dir.join(format!("{}.md", trash_id));
-            atomic_write(&trash_file, &content)?;
-            fs::remove_file(&abs)?;
-
-            let mut items = self.read_trash_index()?;
-            items.push(TrashItem {
-                trash_id,
-                original_path: clean_rel.clone(),
-                title,
-                deleted_at,
-                size_bytes,
-            });
-            items.sort_by(|a, b| b.deleted_at.cmp(&a.deleted_at));
-            self.write_trash_index(&items)?;
-        }
+        trash::move_to_trash(&self.vault_path, &clean_rel, &abs, &title)?;
 
         self.db.delete_document_by_path(&clean_rel)?;
         self.sync.append_op(
@@ -277,110 +264,49 @@ impl VaultEngine {
         Ok(())
     }
 
-    fn read_trash_index(&self) -> Result<Vec<TrashItem>> {
-        let index_path = self.vault_path.join(".trash").join("index.json");
-        if !index_path.exists() {
-            return Ok(Vec::new());
-        }
-        let raw = fs::read_to_string(&index_path)?;
-        let items: Vec<TrashItem> = serde_json::from_str(&raw).unwrap_or_default();
-        Ok(items)
-    }
-
-    fn write_trash_index(&self, items: &[TrashItem]) -> Result<()> {
-        let index_path = self.vault_path.join(".trash").join("index.json");
-        let json = serde_json::to_string_pretty(items)?;
-        atomic_write(&index_path, json)?;
-        Ok(())
-    }
-
     pub fn list_trash(&self) -> Result<Vec<TrashItem>> {
-        let trash_dir = self.vault_path.join(".trash");
-        let mut items: Vec<TrashItem> = self
-            .read_trash_index()?
-            .into_iter()
-            .filter(|item| trash_dir.join(format!("{}.md", item.trash_id)).exists())
-            .collect();
-        items.sort_by(|a, b| b.deleted_at.cmp(&a.deleted_at));
-        Ok(items)
+        trash::list_trash(&self.vault_path)
     }
 
     pub fn restore_trash_item(&mut self, trash_id: &str) -> Result<DocumentWithBlocks> {
-        let clean_id = trash_id.trim();
-        if clean_id.is_empty()
-            || clean_id.contains('/')
-            || clean_id.contains('\\')
-            || clean_id.contains("..")
-        {
-            return Err(anyhow!("Ungültige Papierkorb-ID: {}", trash_id));
-        }
-
-        let mut items = self.read_trash_index()?;
-        let pos = items
-            .iter()
-            .position(|item| item.trash_id == clean_id)
-            .ok_or_else(|| anyhow!("Papierkorb-Eintrag nicht gefunden: {}", clean_id))?;
-        let item = items[pos].clone();
-
-        let trash_file = self.vault_path.join(".trash").join(format!("{}.md", clean_id));
-        if !trash_file.exists() {
-            return Err(anyhow!(
-                "Papierkorb-Datei fehlt für Eintrag: {}",
-                clean_id
-            ));
-        }
-        let content = fs::read_to_string(&trash_file)?;
-
-        let (orig_rel, orig_abs) = normalize_safe_md_path(&self.vault_path, &item.original_path)?;
-        let dest_rel = if !orig_abs.exists() {
-            orig_rel
-        } else {
-            let parent = Path::new(&orig_rel)
-                .parent()
-                .map(|p| p.to_string_lossy().to_string())
-                .filter(|s| !s.is_empty());
-            let stem = path_stem_str(&orig_rel);
-            let mut n = 1usize;
-            loop {
-                let candidate_name = format!("{} (restored {}).md", stem, n);
-                let candidate_rel = match &parent {
-                    Some(dir) => format!("{}/{}", dir, candidate_name),
-                    None => candidate_name,
-                };
-                if !self.vault_path.join(&candidate_rel).exists() {
-                    break candidate_rel;
-                }
-                n += 1;
-            }
-        };
-
-        let restored = self.save_markdown_document(&dest_rel, &content)?;
-        let _ = fs::remove_file(&trash_file);
-        items.remove(pos);
-        self.write_trash_index(&items)?;
-
-        Ok(restored)
+        let (dest_rel, content) = trash::restore_from_trash(&self.vault_path, trash_id)?;
+        self.save_markdown_document(&dest_rel, &content)
     }
 
     pub fn empty_trash(&mut self) -> Result<usize> {
-        let trash_dir = self.vault_path.join(".trash");
-        if !trash_dir.exists() {
-            return Ok(0);
-        }
-        let mut removed = 0usize;
-        for entry in fs::read_dir(&trash_dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("md") {
-                fs::remove_file(&path)?;
-                removed += 1;
-            }
-        }
-        self.write_trash_index(&[])?;
+        let removed = trash::empty_trash(&self.vault_path)?;
         if removed > 0 {
             self.bump_revision();
         }
         Ok(removed)
+    }
+
+    /// Switches the engine to a different vault directory (expanding leading `~/`),
+    /// creating the folder if missing, and preserving a strictly monotonic revision.
+    pub fn switch_vault(&mut self, new_vault_path: impl AsRef<Path>) -> Result<VaultOverview> {
+        let raw = new_vault_path.as_ref().to_string_lossy();
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return Err(anyhow!("Vault-Pfad darf nicht leer sein"));
+        }
+
+        let target_path = expand_tilde_path(trimmed)?;
+        fs::create_dir_all(&target_path)?;
+
+        let mut new_engine = VaultEngine::open(&target_path, None)?;
+        new_engine.revision = self.revision.saturating_add(1);
+        *self = new_engine;
+        self.get_overview()
+    }
+
+    pub fn save_asset(&mut self, filename: &str, base64_data: &str) -> Result<String> {
+        let rel_path = assets::save_asset(&self.vault_path, filename, base64_data)?;
+        self.bump_revision();
+        Ok(rel_path)
+    }
+
+    pub fn read_asset_data_url(&self, rel_path: &str) -> Result<String> {
+        assets::read_asset_data_url(&self.vault_path, rel_path)
     }
 
     pub fn list_snapshots(&self, rel_path: &str) -> Result<Vec<DocumentSnapshot>> {
@@ -841,304 +767,18 @@ date: {date}
     }
 }
 
-fn path_stem_str(rel_path: &str) -> String {
-    Path::new(rel_path)
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or(rel_path)
-        .to_string()
-}
-
-/// Computes the next occurrence date for a recurring task rule such as
-/// `daily`, `weekly`, `monthly`, `yearly`, `every 3d`, `every 2w`, `every 1m`.
-pub fn compute_next_recurrence_date(base_date: NaiveDate, recurrence: &str) -> Option<NaiveDate> {
-    let normalized = recurrence.trim().to_lowercase();
-    if normalized.is_empty() {
-        return None;
+fn expand_tilde_path(raw: &str) -> Result<PathBuf> {
+    if raw == "~" {
+        let home = std::env::var_os("HOME")
+            .ok_or_else(|| anyhow!("HOME-Umgebungsvariable ist nicht gesetzt"))?;
+        return Ok(PathBuf::from(home));
     }
-
-    match normalized.as_str() {
-        "daily" | "every day" | "1d" => return base_date.checked_add_days(Days::new(1)),
-        "weekly" | "every week" | "1w" => return base_date.checked_add_days(Days::new(7)),
-        "monthly" | "every month" | "1m" => return base_date.checked_add_months(Months::new(1)),
-        "yearly" | "every year" | "1y" => return base_date.checked_add_months(Months::new(12)),
-        _ => {}
+    if let Some(rest) = raw.strip_prefix("~/") {
+        let home = std::env::var_os("HOME")
+            .ok_or_else(|| anyhow!("HOME-Umgebungsvariable ist nicht gesetzt"))?;
+        return Ok(PathBuf::from(home).join(rest));
     }
-
-    let rest = normalized
-        .strip_prefix("every ")
-        .unwrap_or(&normalized)
-        .trim();
-    let digits_len = rest.bytes().take_while(|b| b.is_ascii_digit()).count();
-    if digits_len == 0 {
-        return None;
-    }
-    let count: u64 = rest[..digits_len].parse().ok()?;
-    if count == 0 {
-        return None;
-    }
-    let unit = rest[digits_len..].trim();
-    match unit {
-        "d" | "day" | "days" => base_date.checked_add_days(Days::new(count)),
-        "w" | "week" | "weeks" => base_date.checked_add_days(Days::new(count.saturating_mul(7))),
-        "m" | "month" | "months" => u32::try_from(count)
-            .ok()
-            .and_then(|m| base_date.checked_add_months(Months::new(m))),
-        "y" | "year" | "years" => u32::try_from(count.saturating_mul(12))
-            .ok()
-            .and_then(|m| base_date.checked_add_months(Months::new(m))),
-        _ => None,
-    }
-}
-
-fn build_next_recurring_task_block(completed: &Block, recurrence: &str) -> Option<Block> {
-    let task = completed.task.as_ref()?;
-    let today = Local::now().date_naive();
-
-    let parsed_sched = task
-        .scheduled_at
-        .as_deref()
-        .and_then(|s| NaiveDate::parse_from_str(s.trim(), "%Y-%m-%d").ok());
-    let parsed_dead = task
-        .deadline_at
-        .as_deref()
-        .and_then(|s| NaiveDate::parse_from_str(s.trim(), "%Y-%m-%d").ok());
-
-    let primary_base = parsed_sched.or(parsed_dead).unwrap_or(today);
-    let next_primary = compute_next_recurrence_date(primary_base, recurrence)?;
-
-    let mut next_block = completed.clone();
-    next_block.has_explicit_id = false;
-    let mut raw = completed.raw_content.clone();
-
-    let next_sched = parsed_sched.and_then(|d| compute_next_recurrence_date(d, recurrence));
-    let next_dead = parsed_dead.and_then(|d| compute_next_recurrence_date(d, recurrence));
-
-    if let (Some(old_str), Some(new_d)) = (task.scheduled_at.as_deref(), next_sched) {
-        let new_str = new_d.format("%Y-%m-%d").to_string();
-        raw = replace_date_property(&raw, &["scheduled", "scheduled_at"], old_str, &new_str);
-        if let Some(ref mut t) = next_block.task {
-            t.scheduled_at = Some(new_str);
-        }
-    }
-
-    if let (Some(old_str), Some(new_d)) = (task.deadline_at.as_deref(), next_dead) {
-        let new_str = new_d.format("%Y-%m-%d").to_string();
-        raw = replace_date_property(&raw, &["deadline", "due"], old_str, &new_str);
-        if let Some(ref mut t) = next_block.task {
-            t.deadline_at = Some(new_str);
-        }
-    }
-
-    if parsed_sched.is_none() && parsed_dead.is_none() {
-        let next_str = next_primary.format("%Y-%m-%d").to_string();
-        if !raw.ends_with('\n') && !raw.is_empty() {
-            raw.push('\n');
-        }
-        raw.push_str(&format!("scheduled:: {}", next_str));
-        if let Some(ref mut t) = next_block.task {
-            t.scheduled_at = Some(next_str);
-        }
-    }
-
-    next_block.raw_content = raw;
-    if let Some(ref mut t) = next_block.task {
-        t.status = TaskStatus::Todo;
-    }
-    Some(next_block)
-}
-
-fn replace_date_property(raw: &str, keys: &[&str], old_date: &str, new_date: &str) -> String {
-    let mut updated_lines = Vec::new();
-    let mut replaced = false;
-    for line in raw.lines() {
-        let trimmed = line.trim();
-        let mut new_line = line.to_string();
-        for key in keys {
-            let prefix = format!("{}::", key);
-            if trimmed.to_lowercase().starts_with(&prefix) && line.contains(old_date) {
-                new_line = line.replacen(old_date, new_date, 1);
-                replaced = true;
-                break;
-            }
-        }
-        if !replaced {
-            // Also support inline bracketed `[scheduled:: 2026-11-23]` or emoji dates
-            for key in keys {
-                let marker = format!("{}:: {}", key, old_date);
-                if new_line.contains(&marker) {
-                    new_line = new_line.replacen(&marker, &format!("{}:: {}", key, new_date), 1);
-                    replaced = true;
-                    break;
-                }
-            }
-        }
-        updated_lines.push(new_line);
-    }
-    if replaced {
-        updated_lines.join("\n")
-    } else {
-        raw.replacen(old_date, new_date, 1)
-    }
-}
-
-fn format_frontmatter_scalar(value: &str) -> String {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        return "\"\"".to_string();
-    }
-    if trimmed.starts_with('[') && trimmed.ends_with(']') {
-        return trimmed.to_string();
-    }
-    if trimmed.contains(':')
-        || trimmed.contains('#')
-        || trimmed.starts_with('[')
-        || trimmed.starts_with('{')
-        || trimmed.starts_with('"')
-    {
-        format!("\"{}\"", trimmed.replace('"', "\\\""))
-    } else {
-        trimmed.to_string()
-    }
-}
-
-fn upsert_frontmatter_property(raw_md: &str, key: &str, value: &str) -> String {
-    let formatted = format_frontmatter_scalar(value);
-    let new_entry = format!("{}: {}", key, formatted);
-
-    let open_prefix = if raw_md.starts_with("---\r\n") {
-        Some(("---\r\n", "\r\n"))
-    } else if raw_md.starts_with("---\n") {
-        Some(("---\n", "\n"))
-    } else {
-        None
-    };
-
-    if let Some((open_delim, nl)) = open_prefix {
-        let after_open = &raw_md[open_delim.len()..];
-        let mut fm_lines: Vec<&str> = Vec::new();
-        let mut offset = 0usize;
-        let mut found_close = false;
-
-        for line in after_open.split_inclusive('\n') {
-            let trimmed = line.trim();
-            offset += line.len();
-            if trimmed == "---" || trimmed == "..." {
-                found_close = true;
-                break;
-            }
-            fm_lines.push(line.trim_end_matches(['\r', '\n']));
-        }
-
-        if found_close {
-            let body = &after_open[offset..];
-            let mut out_lines: Vec<String> = Vec::with_capacity(fm_lines.len() + 1);
-            let mut updated = false;
-            let mut skip_list_items = false;
-
-            for line in fm_lines {
-                let trimmed = line.trim();
-                if skip_list_items {
-                    if trimmed.starts_with("- ") {
-                        continue;
-                    }
-                    skip_list_items = false;
-                }
-                if !updated {
-                    if let Some((k, rest)) = trimmed.split_once(':') {
-                        if k.trim() == key {
-                            out_lines.push(new_entry.clone());
-                            updated = true;
-                            if rest.trim().is_empty() {
-                                skip_list_items = true;
-                            }
-                            continue;
-                        }
-                    }
-                }
-                out_lines.push(line.to_string());
-            }
-
-            if !updated {
-                out_lines.push(new_entry);
-            }
-
-            let mut result = String::with_capacity(raw_md.len() + 64);
-            result.push_str("---");
-            result.push_str(nl);
-            for line in out_lines {
-                result.push_str(&line);
-                result.push_str(nl);
-            }
-            result.push_str("---");
-            result.push_str(nl);
-            result.push_str(body);
-            return result;
-        }
-    }
-
-    format!("---\n{}\n---\n\n{}", new_entry, raw_md)
-}
-
-/// Rewrites `[[Target]]`, `[[Target|Alias]]`, and `[[Target#Heading]]` wiki-links in Markdown
-/// when a note is renamed, matching case-insensitively against any of `old_targets`.
-pub fn rewrite_wiki_links_in_markdown(
-    markdown: &str,
-    old_targets: &[String],
-    new_target: &str,
-) -> String {
-    let lower_targets: Vec<String> = old_targets
-        .iter()
-        .map(|t| t.trim().to_lowercase())
-        .filter(|t| !t.is_empty())
-        .collect();
-    if lower_targets.is_empty() {
-        return markdown.to_string();
-    }
-
-    let mut out = String::with_capacity(markdown.len());
-    let mut rest = markdown;
-
-    while let Some(start) = rest.find("[[") {
-        out.push_str(&rest[..start]);
-        let after_open = &rest[start + 2..];
-        let Some(end) = after_open.find("]]") else {
-            out.push_str(&rest[start..]);
-            return out;
-        };
-        let inner = &after_open[..end];
-        let (target_and_anchor, alias_part) = match inner.split_once('|') {
-            Some((lhs, rhs)) => (lhs, Some(rhs)),
-            None => (inner, None),
-        };
-        let (target_part, anchor_part) = match target_and_anchor.split_once('#') {
-            Some((lhs, rhs)) => (lhs, Some(rhs)),
-            None => (target_and_anchor, None),
-        };
-
-        let normalized_target = target_part.trim().trim_end_matches(".md").to_lowercase();
-        if lower_targets.iter().any(|old| old == &normalized_target) {
-            out.push_str("[[");
-            out.push_str(new_target);
-            if let Some(anchor) = anchor_part {
-                out.push('#');
-                out.push_str(anchor);
-            }
-            if let Some(alias) = alias_part {
-                out.push('|');
-                out.push_str(alias);
-            }
-            out.push_str("]]");
-        } else {
-            out.push_str("[[");
-            out.push_str(inner);
-            out.push_str("]]");
-        }
-        rest = &after_open[end + 2..];
-    }
-
-    out.push_str(rest);
-    out
+    Ok(PathBuf::from(raw))
 }
 
 /// Computes a local SSD cache path outside the vault directory so cloud-sync folders never hold SQLite files.
@@ -1158,6 +798,7 @@ pub fn default_cache_db_path(vault_path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::NaiveDate;
 
     #[test]
     fn full_engine_lifecycle_demo_tasks_and_lazy_id() {
@@ -1433,5 +1074,57 @@ mod tests {
             .unwrap()
             .is_empty());
         assert_eq!(engine.get_backlinks(&target.document.id).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn switch_vault_creates_target_preserves_monotonic_revision_and_isolates_assets() {
+        let dir = tempdir().unwrap();
+        let vault_a = dir.path().join("vault-a");
+        let vault_b = dir.path().join("vault-b-new");
+        let cache_a = dir.path().join("cache-a.sqlite");
+
+        let mut engine = VaultEngine::open(&vault_a, Some(cache_a)).unwrap();
+        engine
+            .save_markdown_document("Alpha.md", "# Alpha\n\nIn Vault A.\n")
+            .unwrap();
+        let asset_rel = engine
+            .save_asset("logo.png", &assets::encode_base64(b"\x89PNGdata"))
+            .unwrap();
+        assert_eq!(asset_rel, "assets/logo.png");
+        let data_url = engine.read_asset_data_url(&asset_rel).unwrap();
+        assert!(data_url.starts_with("data:image/png;base64,"));
+
+        let rev_before_switch = engine.revision();
+        assert!(rev_before_switch >= 3);
+
+        // Switching to a brand-new folder creates it and strictly increases revision
+        let overview_b = engine.switch_vault(&vault_b).unwrap();
+        assert!(vault_b.exists());
+        assert_eq!(overview_b.vault_path, vault_b.to_string_lossy());
+        assert_eq!(overview_b.revision, rev_before_switch + 1);
+        assert_eq!(engine.revision(), rev_before_switch + 1);
+        assert_eq!(overview_b.total_documents, 0);
+        assert!(engine.get_document("Alpha.md").unwrap().is_none());
+
+        // Write a note in Vault B, then switch back to Vault A
+        engine
+            .save_markdown_document("Beta.md", "# Beta\n\nIn Vault B.\n")
+            .unwrap();
+        let rev_in_b = engine.revision();
+
+        let overview_a = engine.switch_vault(&vault_a).unwrap();
+        assert_eq!(overview_a.revision, rev_in_b + 1);
+        assert_eq!(overview_a.total_documents, 1);
+        assert!(engine.get_document("Alpha.md").unwrap().is_some());
+        assert!(engine.get_document("Beta.md").unwrap().is_none());
+
+        // Empty path is rejected
+        assert!(engine.switch_vault("   ").is_err());
+
+        // Tilde expansion uses HOME when present
+        if let Some(home) = std::env::var_os("HOME") {
+            let expanded = expand_tilde_path("~/my-notes").unwrap();
+            assert_eq!(expanded, PathBuf::from(home).join("my-notes"));
+        }
     }
 }

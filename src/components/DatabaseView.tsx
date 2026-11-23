@@ -289,7 +289,7 @@ export function DatabaseView({ onOpenDocument }: DatabaseViewProps) {
             Strukturierte Datenbank-Ansichten
           </h1>
           <p className="text-xs text-zinc-400">
-            Live-Queries über Frontmatter & Block-Properties (SQLite JSONB) als
+            Live-Queries über Frontmatter &amp; Block-Properties (SQLite JSONB) als
             Tabelle, Kanban-Board oder Galerie
           </p>
         </div>

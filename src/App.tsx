@@ -1,21 +1,35 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Suspense,
+  lazy,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   AlertCircle,
   ArrowLeft,
   ArrowRight,
   BarChart3,
+  BookOpen,
   CalendarDays,
+  Check,
   CheckSquare,
   ChevronDown,
   ChevronRight,
   Cloud,
+  Code2,
+  Columns2,
   Compass,
   Contrast,
   Database,
+  ExternalLink,
   FilePlus2,
   FileText,
   Folder,
   FolderOpen,
+  FolderSync,
   Gauge,
   Keyboard,
   Layers,
@@ -33,28 +47,82 @@ import {
   Zap,
 } from "lucide-react";
 import { isTauriRuntime, vaultApi } from "./api/bridge";
-import { AnalyticsModal } from "./components/AnalyticsModal";
 import {
   CommandPalette,
   type CommandPaletteAction,
 } from "./components/CommandPalette";
-import { DatabaseView } from "./components/DatabaseView";
-import { GraphView } from "./components/GraphView";
 import { HybridEditor } from "./components/HybridEditor";
-import { InfiniteCanvas } from "./components/InfiniteCanvas";
-import { QuickCaptureModal } from "./components/QuickCaptureModal";
-import { ShortcutsModal } from "./components/ShortcutsModal";
-import { SyncBenchmarkModal } from "./components/SyncBenchmarkModal";
-import { TasksCalendarView } from "./components/TasksCalendarView";
-import { TrashModal } from "./components/TrashModal";
 import type {
+  Block,
   DocumentSummary,
   DocumentWithBlocks,
   VaultOverview,
 } from "./types/vault";
 
+const GraphView = lazy(() =>
+  import("./components/GraphView").then((m) => ({ default: m.GraphView })),
+);
+const InfiniteCanvas = lazy(() =>
+  import("./components/InfiniteCanvas").then((m) => ({
+    default: m.InfiniteCanvas,
+  })),
+);
+const TasksCalendarView = lazy(() =>
+  import("./components/TasksCalendarView").then((m) => ({
+    default: m.TasksCalendarView,
+  })),
+);
+const DatabaseView = lazy(() =>
+  import("./components/DatabaseView").then((m) => ({
+    default: m.DatabaseView,
+  })),
+);
+const SyncBenchmarkModal = lazy(() =>
+  import("./components/SyncBenchmarkModal").then((m) => ({
+    default: m.SyncBenchmarkModal,
+  })),
+);
+const TrashModal = lazy(() =>
+  import("./components/TrashModal").then((m) => ({ default: m.TrashModal })),
+);
+const AnalyticsModal = lazy(() =>
+  import("./components/AnalyticsModal").then((m) => ({
+    default: m.AnalyticsModal,
+  })),
+);
+const QuickCaptureModal = lazy(() =>
+  import("./components/QuickCaptureModal").then((m) => ({
+    default: m.QuickCaptureModal,
+  })),
+);
+const ShortcutsModal = lazy(() =>
+  import("./components/ShortcutsModal").then((m) => ({
+    default: m.ShortcutsModal,
+  })),
+);
+const VaultSwitcherModal = lazy(() =>
+  import("./components/VaultSwitcherModal").then((m) => ({
+    default: m.VaultSwitcherModal,
+  })),
+);
+
 type ActiveView = "editor" | "tasks" | "database" | "graph" | "canvas";
 type ThemeMode = "dark" | "light" | "high-contrast";
+type SplitMode = "off" | "doc" | "graph";
+type SplitReaderMode = "rendered" | "markdown";
+
+const VIEW_SUSPENSE_FALLBACK = (
+  <div className="flex h-full items-center justify-center text-xs text-zinc-500">
+    Lade Ansicht...
+  </div>
+);
+
+function getVaultBaseName(vaultPath?: string): string {
+  if (!vaultPath) return "Vault";
+  const cleaned = vaultPath.replace(/[\\/]+$/, "");
+  const parts = cleaned.split(/[\\/]/);
+  return parts[parts.length - 1] || vaultPath;
+}
 
 const PINNED_STORAGE_KEY = "oxidevault_pinned_docs";
 const RECENT_STORAGE_KEY = "oxidevault_recent_docs";
@@ -103,6 +171,13 @@ export function App() {
   const [analyticsOpen, setAnalyticsOpen] = useState(false);
   const [quickCaptureOpen, setQuickCaptureOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [vaultSwitcherOpen, setVaultSwitcherOpen] = useState(false);
+
+  const [splitMode, setSplitMode] = useState<SplitMode>("off");
+  const [splitDoc, setSplitDoc] = useState<DocumentWithBlocks | null>(null);
+  const [splitReaderMode, setSplitReaderMode] =
+    useState<SplitReaderMode>("rendered");
+  const [splitDocLoading, setSplitDocLoading] = useState(false);
 
   const [creatingNote, setCreatingNote] = useState(false);
   const [newNoteName, setNewNoteName] = useState("");
@@ -235,6 +310,78 @@ export function App() {
       }
     },
     [recordOpenedDocument, refreshVault],
+  );
+
+  const openSplitDocument = useCallback(async (path: string) => {
+    setSplitDocLoading(true);
+    setActionError(null);
+    try {
+      const doc = await vaultApi.getDocument(path);
+      setSplitDoc(doc);
+    } catch (err) {
+      setActionError(
+        err instanceof Error
+          ? err.message
+          : "Split-Dokument konnte nicht geladen werden.",
+      );
+    } finally {
+      setSplitDocLoading(false);
+    }
+  }, []);
+
+  const activateSplitDoc = useCallback(() => {
+    setActiveView("editor");
+    setSplitMode("doc");
+    if (
+      !splitDoc ||
+      !documents.some((d) => d.path === splitDoc.document.path)
+    ) {
+      const candidate =
+        documents.find((d) => d.path !== activeDoc?.document.path) ??
+        documents[0];
+      if (candidate) {
+        void openSplitDocument(candidate.path);
+      }
+    }
+  }, [activeDoc?.document.path, documents, openSplitDocument, splitDoc]);
+
+  const cycleSplitMode = useCallback(() => {
+    if (splitMode === "off") {
+      activateSplitDoc();
+    } else if (splitMode === "doc") {
+      setActiveView("editor");
+      setSplitMode("graph");
+    } else {
+      setSplitMode("off");
+    }
+  }, [activateSplitDoc, splitMode]);
+
+  const handleVaultSwitched = useCallback(
+    async (newOverview: VaultOverview) => {
+      navIndexRef.current = -1;
+      setNavHistory([]);
+      setNavIndex(-1);
+      setActiveDoc(null);
+      setSplitDoc(null);
+      setOverview(newOverview);
+      lastRevisionRef.current = newOverview.revision;
+      if (newOverview.canvasFiles.length > 0) {
+        setActiveCanvasPath(newOverview.canvasFiles[0]);
+      }
+      const docs = await refreshVault();
+      setActiveView("editor");
+      if (docs.length > 0) {
+        const preferred =
+          docs.find((d) => d.path === "Willkommen in OxideVault.md") ?? docs[0];
+        await openDocument(preferred.path);
+        if (splitMode === "doc") {
+          const secondary =
+            docs.find((d) => d.path !== preferred.path) ?? preferred;
+          await openSplitDocument(secondary.path);
+        }
+      }
+    },
+    [openDocument, openSplitDocument, refreshVault, splitMode],
   );
 
   const canGoBack = navIndex > 0;
@@ -424,6 +571,9 @@ export function App() {
     try {
       await vaultApi.deleteDocument(relPath);
       setPinnedPaths((prev) => prev.filter((p) => p !== relPath));
+      setSplitDoc((curr) =>
+        curr && curr.document.path === relPath ? null : curr,
+      );
       const docs = await refreshVault();
       if (docs.length > 0) {
         await openDocument(docs[0].path);
@@ -450,6 +600,9 @@ export function App() {
     );
     setRecentPaths((prev) =>
       prev.map((p) => (p === oldRelPath ? renamed.document.path : p)),
+    );
+    setSplitDoc((curr) =>
+      curr && curr.document.path === oldRelPath ? renamed : curr,
     );
     await refreshVault();
     setActiveDoc(renamed);
@@ -521,6 +674,25 @@ export function App() {
         run: cycleTheme,
       },
       {
+        id: "toggle-split-view",
+        label: "Split-View umschalten",
+        description: `Aktuell: ${
+          splitMode === "off"
+            ? "Aus"
+            : splitMode === "doc"
+              ? "Zweite Notiz"
+              : "Graph"
+        } (Aus → Notiz → Graph)`,
+        run: cycleSplitMode,
+      },
+      {
+        id: "switch-vault",
+        label: "Vault wechseln...",
+        description:
+          "Anderen Cloud-Safe Vault-Ordner mit eigenem lokalen SQLite-Cache öffnen",
+        run: () => setVaultSwitcherOpen(true),
+      },
+      {
         id: "toggle-zen",
         label: isZenMode ? "Zen-Modus beenden" : "Zen-Modus aktivieren",
         description: "Sidebar und Statusleiste ausblenden",
@@ -562,11 +734,13 @@ export function App() {
       },
     ],
     [
+      cycleSplitMode,
       cycleTheme,
       handleOpenDaily,
       handleOpenRandomNote,
       isZenMode,
       refreshVault,
+      splitMode,
       theme,
     ],
   );
@@ -643,15 +817,15 @@ export function App() {
               </div>
             </div>
 
-            {/* Search & Quick Capture Triggers */}
+            {/* Search, Quick Capture & Split-View Triggers */}
             <div className="flex gap-1.5 p-3">
               <button
                 onClick={() => setPaletteOpen(true)}
-                className="flex min-w-0 flex-1 items-center justify-between rounded-xl border border-zinc-800 bg-zinc-900/70 px-3 py-2 text-xs text-zinc-400 transition hover:border-zinc-700 hover:text-zinc-200"
+                className="flex min-w-0 flex-1 items-center justify-between rounded-xl border border-zinc-800 bg-zinc-900/70 px-2.5 py-2 text-xs text-zinc-400 transition hover:border-zinc-700 hover:text-zinc-200"
               >
-                <span className="flex items-center gap-2 truncate">
+                <span className="flex items-center gap-1.5 truncate">
                   <Search className="h-3.5 w-3.5 shrink-0 text-indigo-400" />
-                  <span className="truncate">Suche & Befehle...</span>
+                  <span className="truncate">Suche...</span>
                 </span>
                 <kbd className="ml-1 shrink-0 rounded bg-zinc-800 px-1.5 py-0.5 font-mono text-[10px] text-zinc-400">
                   Ctrl+K
@@ -663,6 +837,23 @@ export function App() {
                 className="flex shrink-0 items-center justify-center rounded-xl border border-zinc-800 bg-zinc-900/70 px-2.5 text-amber-400 transition hover:border-amber-500/40 hover:bg-zinc-900"
               >
                 <Zap className="h-3.5 w-3.5" />
+              </button>
+              <button
+                onClick={cycleSplitMode}
+                title={`Split-View umschalten (Aktuell: ${
+                  splitMode === "off"
+                    ? "Aus"
+                    : splitMode === "doc"
+                      ? "Notiz"
+                      : "Graph"
+                })`}
+                className={`flex shrink-0 items-center justify-center rounded-xl border px-2.5 transition ${
+                  splitMode !== "off"
+                    ? "border-indigo-500/60 bg-indigo-500/20 text-indigo-300"
+                    : "border-zinc-800 bg-zinc-900/70 text-zinc-400 hover:border-indigo-500/40 hover:bg-zinc-900 hover:text-zinc-200"
+                }`}
+              >
+                <Columns2 className="h-3.5 w-3.5" />
               </button>
             </div>
 
@@ -864,8 +1055,23 @@ export function App() {
               </div>
             </div>
 
-            {/* Utility, Sync & Benchmark Actions */}
+            {/* Utility, Vault Switcher, Sync & Benchmark Actions */}
             <div className="space-y-1.5 border-t border-zinc-800/80 p-3">
+              <button
+                onClick={() => setVaultSwitcherOpen(true)}
+                title={overview?.vaultPath ?? "Vault wechseln"}
+                className="flex w-full items-center justify-between gap-2 rounded-xl border border-zinc-800 bg-zinc-900/60 px-3 py-1.5 text-xs text-zinc-300 transition hover:border-indigo-500/40 hover:bg-zinc-900"
+              >
+                <span className="flex min-w-0 items-center gap-2">
+                  <FolderSync className="h-3.5 w-3.5 shrink-0 text-indigo-400" />
+                  <span className="truncate font-medium">
+                    {getVaultBaseName(overview?.vaultPath)}
+                  </span>
+                </span>
+                <span className="shrink-0 text-[10px] text-indigo-300">
+                  Wechseln
+                </span>
+              </button>
               <div className="grid grid-cols-2 gap-1.5">
                 <button
                   onClick={() => setAnalyticsOpen(true)}
@@ -938,52 +1144,178 @@ export function App() {
           )}
 
           {!backendError && activeView === "editor" && activeDoc && (
-            <HybridEditor
-              docBundle={activeDoc}
-              allDocuments={documents}
-              onSaved={async (updated) => {
-                setActiveDoc(updated);
-                await refreshVault();
-              }}
-              onNavigate={(target) => void openDocument(target)}
-              onDeleteDocument={handleDeleteDocument}
-              onRenameDocument={handleRenameDocument}
-              isZenMode={isZenMode}
-              onToggleZenMode={() => setIsZenMode((v) => !v)}
-            />
+            splitMode === "off" ? (
+              <HybridEditor
+                docBundle={activeDoc}
+                allDocuments={documents}
+                onSaved={async (updated) => {
+                  setActiveDoc(updated);
+                  setSplitDoc((curr) =>
+                    curr && curr.document.path === updated.document.path
+                      ? updated
+                      : curr,
+                  );
+                  await refreshVault();
+                }}
+                onNavigate={(target) => void openDocument(target)}
+                onDeleteDocument={handleDeleteDocument}
+                onRenameDocument={handleRenameDocument}
+                isZenMode={isZenMode}
+                onToggleZenMode={() => setIsZenMode((v) => !v)}
+              />
+            ) : (
+              <div className="grid h-full min-h-0 grid-cols-1 divide-y divide-zinc-800/80 xl:grid-cols-2 xl:divide-x xl:divide-y-0">
+                <div className="min-h-0 min-w-0 overflow-hidden">
+                  <HybridEditor
+                    docBundle={activeDoc}
+                    allDocuments={documents}
+                    onSaved={async (updated) => {
+                      setActiveDoc(updated);
+                      setSplitDoc((curr) =>
+                        curr && curr.document.path === updated.document.path
+                          ? updated
+                          : curr,
+                      );
+                      await refreshVault();
+                    }}
+                    onNavigate={(target) => void openDocument(target)}
+                    onDeleteDocument={handleDeleteDocument}
+                    onRenameDocument={handleRenameDocument}
+                    isZenMode={isZenMode}
+                    onToggleZenMode={() => setIsZenMode((v) => !v)}
+                  />
+                </div>
+                <div className="flex min-h-0 min-w-0 flex-col overflow-hidden bg-zinc-950">
+                  {splitMode === "doc" ? (
+                    <SplitDocumentPane
+                      documents={documents}
+                      splitDoc={splitDoc}
+                      loading={splitDocLoading}
+                      readerMode={splitReaderMode}
+                      onChangeReaderMode={setSplitReaderMode}
+                      onSelectDocument={(path) => void openSplitDocument(path)}
+                      onOpenInMain={(path) => void openDocument(path)}
+                      onSwitchToGraph={() => setSplitMode("graph")}
+                      onClose={() => setSplitMode("off")}
+                    />
+                  ) : (
+                    <>
+                      <div className="flex shrink-0 items-center justify-between gap-2 border-b border-zinc-800/80 bg-zinc-950/90 px-3 py-2">
+                        <div className="flex items-center gap-2 text-xs font-medium text-zinc-200">
+                          <Compass className="h-3.5 w-3.5 text-indigo-400" />
+                          <span>Split-Graph</span>
+                          <span className="hidden truncate text-[11px] text-zinc-500 sm:inline">
+                            • {activeDoc.document.title}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-1">
+                          <button
+                            type="button"
+                            onClick={activateSplitDoc}
+                            title="Zur zweiten Notiz wechseln"
+                            className="flex items-center gap-1 rounded-lg border border-zinc-800 bg-zinc-900/70 px-2 py-1 text-[11px] text-zinc-300 transition hover:border-indigo-500/40 hover:text-indigo-200"
+                          >
+                            <FileText className="h-3 w-3" />
+                            <span>Notiz</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setSplitMode("off")}
+                            title="Split-View schließen"
+                            aria-label="Split-View schließen"
+                            className="rounded-lg p-1 text-zinc-400 hover:bg-zinc-900 hover:text-zinc-200"
+                          >
+                            <X className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                      <div className="min-h-0 flex-1 overflow-hidden">
+                        <Suspense fallback={VIEW_SUSPENSE_FALLBACK}>
+                          <GraphView
+                            onOpenDocument={(p) => void openDocument(p)}
+                            activeDocId={activeDoc?.document.id ?? null}
+                          />
+                        </Suspense>
+                      </div>
+                    </>
+                  )}
+                </div>
+              </div>
+            )
+          )}
+
+          {!backendError && activeView === "editor" && !activeDoc && (
+            <div className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center text-zinc-400">
+              <FileText className="h-8 w-8 text-zinc-600" />
+              <div className="space-y-1">
+                <p className="text-sm font-medium text-zinc-200">
+                  Keine Notiz geöffnet
+                </p>
+                <p className="text-xs text-zinc-500">
+                  Erstelle eine neue Notiz in diesem Vault oder wechsle zu einem
+                  anderen Vault-Ordner.
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setCreatingNote(true)}
+                  className="flex items-center gap-1.5 rounded-xl bg-indigo-600 px-3.5 py-2 text-xs font-medium text-white transition hover:bg-indigo-500"
+                >
+                  <FilePlus2 className="h-3.5 w-3.5" />
+                  Neue Notiz
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setVaultSwitcherOpen(true)}
+                  className="flex items-center gap-1.5 rounded-xl border border-zinc-800 bg-zinc-900 px-3.5 py-2 text-xs font-medium text-zinc-200 transition hover:border-indigo-500/40"
+                >
+                  <FolderSync className="h-3.5 w-3.5 text-indigo-400" />
+                  Vault wechseln
+                </button>
+              </div>
+            </div>
           )}
 
           {!backendError && activeView === "tasks" && (
-            <TasksCalendarView
-              onOpenDocument={(p) => void openDocument(p)}
-              onOpenDaily={(d) => void handleOpenDaily(d)}
-              onTasksChanged={async () => {
-                await refreshVault();
-              }}
-            />
+            <Suspense fallback={VIEW_SUSPENSE_FALLBACK}>
+              <TasksCalendarView
+                onOpenDocument={(p) => void openDocument(p)}
+                onOpenDaily={(d) => void handleOpenDaily(d)}
+                onTasksChanged={async () => {
+                  await refreshVault();
+                }}
+              />
+            </Suspense>
           )}
 
           {!backendError && activeView === "database" && (
-            <DatabaseView onOpenDocument={(p) => void openDocument(p)} />
+            <Suspense fallback={VIEW_SUSPENSE_FALLBACK}>
+              <DatabaseView onOpenDocument={(p) => void openDocument(p)} />
+            </Suspense>
           )}
 
           {!backendError && activeView === "graph" && (
-            <GraphView
-              onOpenDocument={(p) => void openDocument(p)}
-              activeDocId={activeDoc?.document.id ?? null}
-            />
+            <Suspense fallback={VIEW_SUSPENSE_FALLBACK}>
+              <GraphView
+                onOpenDocument={(p) => void openDocument(p)}
+                activeDocId={activeDoc?.document.id ?? null}
+              />
+            </Suspense>
           )}
 
           {!backendError && activeView === "canvas" && (
-            <InfiniteCanvas
-              canvasPath={activeCanvasPath}
-              documents={documents}
-              onOpenDocument={(p) => void openDocument(p)}
-              onCanvasListChanged={async () => {
-                await refreshVault();
-              }}
-              onSelectCanvas={(p) => setActiveCanvasPath(p)}
-            />
+            <Suspense fallback={VIEW_SUSPENSE_FALLBACK}>
+              <InfiniteCanvas
+                canvasPath={activeCanvasPath}
+                documents={documents}
+                onOpenDocument={(p) => void openDocument(p)}
+                onCanvasListChanged={async () => {
+                  await refreshVault();
+                }}
+                onSelectCanvas={(p) => setActiveCanvasPath(p)}
+              />
+            </Suspense>
           )}
         </main>
       </div>
@@ -991,21 +1323,29 @@ export function App() {
       {/* Bottom Engine Status Bar (hidden in Zen Mode) */}
       {!isZenMode && (
         <footer className="flex items-center justify-between border-t border-zinc-800/80 bg-zinc-950 px-4 py-1.5 text-[11px] text-zinc-500">
-          <div className="flex items-center gap-4">
-            <span className="flex items-center gap-1.5">
+          <div className="flex min-w-0 items-center gap-4">
+            <span className="flex shrink-0 items-center gap-1.5">
               <span className="h-2 w-2 rounded-full bg-emerald-400" />
               {isTauriRuntime() ? "Tauri v2 Native" : "Rust Core API"}
             </span>
-            <span className="hidden truncate sm:inline">
-              Vault (Cloud-Safe):{" "}
-              <code className="text-zinc-400">{overview?.vaultPath ?? "—"}</code>
-            </span>
+            <button
+              type="button"
+              onClick={() => setVaultSwitcherOpen(true)}
+              title="Klicken zum Wechseln des Vaults"
+              className="hidden min-w-0 items-center gap-1.5 truncate rounded-md px-1.5 py-0.5 text-left transition hover:bg-zinc-900 hover:text-zinc-200 sm:inline-flex"
+            >
+              <FolderSync className="h-3 w-3 shrink-0 text-indigo-400" />
+              <span className="shrink-0">Vault (Cloud-Safe):</span>
+              <code className="truncate text-zinc-300">
+                {overview?.vaultPath ?? "—"}
+              </code>
+            </button>
             <span className="hidden truncate lg:inline">
               Lokaler SQLite-Cache:{" "}
               <code className="text-zinc-400">{overview?.dbPath ?? "—"}</code>
             </span>
           </div>
-          <div className="flex items-center gap-3 font-mono">
+          <div className="flex shrink-0 items-center gap-3 font-mono">
             <span>{overview?.totalDocuments ?? 0} Docs</span>
             <span>{overview?.totalBlocks ?? 0} Blöcke</span>
             <span>{overview?.totalLinks ?? 0} Links</span>
@@ -1030,58 +1370,80 @@ export function App() {
         actions={paletteActions}
       />
 
-      <SyncBenchmarkModal
-        isOpen={modalState.open}
-        initialTab={modalState.tab}
-        onClose={() => setModalState((s) => ({ ...s, open: false }))}
-        syncStatus={overview?.syncStatus ?? null}
-        onRefresh={async () => {
-          await refreshVault();
-        }}
-      />
+      <Suspense fallback={null}>
+        {modalState.open && (
+          <SyncBenchmarkModal
+            isOpen={modalState.open}
+            initialTab={modalState.tab}
+            onClose={() => setModalState((s) => ({ ...s, open: false }))}
+            syncStatus={overview?.syncStatus ?? null}
+            onRefresh={async () => {
+              await refreshVault();
+            }}
+          />
+        )}
 
-      <TrashModal
-        isOpen={trashOpen}
-        onClose={() => setTrashOpen(false)}
-        onRestored={async (doc) => {
-          await refreshVault();
-          setActiveDoc(doc);
-          setActiveView("editor");
-          recordOpenedDocument(doc.document.path, true);
-        }}
-        onChanged={async () => {
-          await refreshVault();
-        }}
-      />
+        {trashOpen && (
+          <TrashModal
+            isOpen={trashOpen}
+            onClose={() => setTrashOpen(false)}
+            onRestored={async (doc) => {
+              await refreshVault();
+              setActiveDoc(doc);
+              setActiveView("editor");
+              recordOpenedDocument(doc.document.path, true);
+            }}
+            onChanged={async () => {
+              await refreshVault();
+            }}
+          />
+        )}
 
-      <AnalyticsModal
-        isOpen={analyticsOpen}
-        onClose={() => setAnalyticsOpen(false)}
-        onOpenDocument={(target) => void openDocument(target)}
-      />
+        {analyticsOpen && (
+          <AnalyticsModal
+            isOpen={analyticsOpen}
+            onClose={() => setAnalyticsOpen(false)}
+            onOpenDocument={(target) => void openDocument(target)}
+          />
+        )}
 
-      <QuickCaptureModal
-        isOpen={quickCaptureOpen}
-        onClose={() => setQuickCaptureOpen(false)}
-        onCaptured={async () => {
-          const docs = await refreshVault();
-          if (activeDoc) {
-            const refreshed = await vaultApi.getDocument(
-              activeDoc.document.path,
-            );
-            if (refreshed) {
-              setActiveDoc(refreshed);
-            } else if (docs.length > 0) {
-              await openDocument(docs[0].path);
-            }
-          }
-        }}
-      />
+        {quickCaptureOpen && (
+          <QuickCaptureModal
+            isOpen={quickCaptureOpen}
+            onClose={() => setQuickCaptureOpen(false)}
+            onCaptured={async () => {
+              const docs = await refreshVault();
+              if (activeDoc) {
+                const refreshed = await vaultApi.getDocument(
+                  activeDoc.document.path,
+                );
+                if (refreshed) {
+                  setActiveDoc(refreshed);
+                } else if (docs.length > 0) {
+                  await openDocument(docs[0].path);
+                }
+              }
+            }}
+          />
+        )}
 
-      <ShortcutsModal
-        isOpen={shortcutsOpen}
-        onClose={() => setShortcutsOpen(false)}
-      />
+        {shortcutsOpen && (
+          <ShortcutsModal
+            isOpen={shortcutsOpen}
+            onClose={() => setShortcutsOpen(false)}
+          />
+        )}
+
+        {vaultSwitcherOpen && (
+          <VaultSwitcherModal
+            isOpen={vaultSwitcherOpen}
+            currentVaultPath={overview?.vaultPath ?? ""}
+            currentDbPath={overview?.dbPath ?? ""}
+            onClose={() => setVaultSwitcherOpen(false)}
+            onSwitched={handleVaultSwitched}
+          />
+        )}
+      </Suspense>
     </div>
   );
 }
@@ -1267,6 +1629,308 @@ function FolderTreeView({
         );
       })}
     </>
+  );
+}
+
+function SplitDocumentPane({
+  documents,
+  splitDoc,
+  loading,
+  readerMode,
+  onChangeReaderMode,
+  onSelectDocument,
+  onOpenInMain,
+  onSwitchToGraph,
+  onClose,
+}: {
+  documents: DocumentSummary[];
+  splitDoc: DocumentWithBlocks | null;
+  loading: boolean;
+  readerMode: SplitReaderMode;
+  onChangeReaderMode: (mode: SplitReaderMode) => void;
+  onSelectDocument: (path: string) => void;
+  onOpenInMain: (path: string) => void;
+  onSwitchToGraph: () => void;
+  onClose: () => void;
+}) {
+  return (
+    <div className="flex h-full min-h-0 flex-col bg-zinc-950">
+      {/* Split Reader Toolbar */}
+      <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-zinc-800/80 bg-zinc-950/90 px-3 py-2">
+        <div className="flex min-w-0 flex-1 items-center gap-1.5">
+          <FileText className="h-3.5 w-3.5 shrink-0 text-indigo-400" />
+          <select
+            aria-label="Notiz für Split-View auswählen"
+            value={splitDoc?.document.path ?? ""}
+            onChange={(e) => {
+              if (e.target.value) onSelectDocument(e.target.value);
+            }}
+            className="min-w-0 flex-1 truncate rounded-lg border border-zinc-800 bg-zinc-900 px-2 py-1 text-xs text-zinc-200 outline-none focus:border-indigo-500/60"
+          >
+            {documents.length === 0 ? (
+              <option value="">Keine Notizen vorhanden</option>
+            ) : (
+              <>
+                {!splitDoc && <option value="">Notiz auswählen...</option>}
+                {documents.map((doc) => (
+                  <option key={doc.id} value={doc.path}>
+                    {doc.title} ({doc.path})
+                  </option>
+                ))}
+              </>
+            )}
+          </select>
+        </div>
+
+        <div className="flex shrink-0 items-center gap-1">
+          {splitDoc && (
+            <button
+              type="button"
+              onClick={() => onOpenInMain(splitDoc.document.path)}
+              title="Diese Notiz im Haupteditor öffnen"
+              className="flex items-center gap-1 rounded-lg border border-zinc-800 bg-zinc-900/70 px-2 py-1 text-[11px] text-zinc-300 transition hover:border-indigo-500/40 hover:text-indigo-200"
+            >
+              <ExternalLink className="h-3 w-3" />
+              <span className="hidden sm:inline">Haupteditor</span>
+            </button>
+          )}
+
+          <div className="flex items-center rounded-lg border border-zinc-800 bg-zinc-900/70 p-0.5 text-[11px]">
+            <button
+              type="button"
+              onClick={() => onChangeReaderMode("rendered")}
+              className={`flex items-center gap-1 rounded-md px-2 py-0.5 transition ${
+                readerMode === "rendered"
+                  ? "bg-indigo-500/20 font-medium text-indigo-200"
+                  : "text-zinc-400 hover:text-zinc-200"
+              }`}
+            >
+              <BookOpen className="h-3 w-3" />
+              <span>Gelesen</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => onChangeReaderMode("markdown")}
+              className={`flex items-center gap-1 rounded-md px-2 py-0.5 transition ${
+                readerMode === "markdown"
+                  ? "bg-indigo-500/20 font-medium text-indigo-200"
+                  : "text-zinc-400 hover:text-zinc-200"
+              }`}
+            >
+              <Code2 className="h-3 w-3" />
+              <span>Markdown</span>
+            </button>
+          </div>
+
+          <button
+            type="button"
+            onClick={onSwitchToGraph}
+            title="Stattdessen Split-Graph anzeigen"
+            className="rounded-lg border border-zinc-800 bg-zinc-900/70 p-1 text-zinc-400 transition hover:border-indigo-500/40 hover:text-indigo-300"
+          >
+            <Compass className="h-3.5 w-3.5" />
+          </button>
+
+          <button
+            type="button"
+            onClick={onClose}
+            title="Split-View schließen"
+            aria-label="Split-View schließen"
+            className="rounded-lg p-1 text-zinc-400 hover:bg-zinc-900 hover:text-zinc-200"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      </div>
+
+      {/* Split Reader Body */}
+      <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
+        {loading ? (
+          <div className="flex h-full items-center justify-center text-xs text-zinc-500">
+            Lade Notiz...
+          </div>
+        ) : !splitDoc ? (
+          <div className="flex h-full flex-col items-center justify-center gap-2 text-center text-xs text-zinc-500">
+            <FileText className="h-6 w-6 text-zinc-600" />
+            <span>Wähle oben eine Notiz für die parallele Ansicht aus.</span>
+          </div>
+        ) : readerMode === "markdown" ? (
+          <div className="space-y-3">
+            <div className="flex items-center justify-between border-b border-zinc-800/70 pb-2">
+              <h2 className="truncate text-sm font-semibold text-zinc-100">
+                {splitDoc.document.title}
+              </h2>
+              <code className="ml-2 shrink-0 text-[11px] text-zinc-500">
+                {splitDoc.document.path}
+              </code>
+            </div>
+            <pre className="whitespace-pre-wrap break-words rounded-xl border border-zinc-800/80 bg-zinc-900/50 p-4 font-mono text-xs leading-relaxed text-zinc-300">
+              {splitDoc.rawMarkdown}
+            </pre>
+          </div>
+        ) : (
+          <article className="mx-auto max-w-2xl space-y-3">
+            <header className="space-y-1.5 border-b border-zinc-800/70 pb-3">
+              <h2 className="text-xl font-bold tracking-tight text-zinc-100">
+                {splitDoc.document.title}
+              </h2>
+              <div className="flex flex-wrap items-center gap-2 text-[11px] text-zinc-500">
+                <code className="font-mono">{splitDoc.document.path}</code>
+                {splitDoc.document.tags.map((tag) => (
+                  <span
+                    key={tag}
+                    className="rounded-full bg-indigo-500/15 px-2 py-0.5 text-[10px] font-medium text-indigo-300"
+                  >
+                    #{tag}
+                  </span>
+                ))}
+              </div>
+            </header>
+
+            {splitDoc.blocks.length === 0 ? (
+              <p className="text-xs italic text-zinc-500">
+                Diese Notiz enthält noch keine Blöcke.
+              </p>
+            ) : (
+              <div className="space-y-2">
+                {splitDoc.blocks.map((block) => (
+                  <SplitReadOnlyBlock key={block.id} block={block} />
+                ))}
+              </div>
+            )}
+          </article>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function SplitReadOnlyBlock({ block }: { block: Block }) {
+  const indentPx = Math.min(block.depth, 6) * 16;
+
+  if (block.blockType === "divider") {
+    return <hr className="my-3 border-zinc-800" />;
+  }
+
+  if (block.blockType === "heading") {
+    const level = block.headingLevel ?? 2;
+    const headingClass =
+      level <= 1
+        ? "pt-2 text-lg font-bold text-zinc-100"
+        : level === 2
+          ? "pt-1.5 text-base font-semibold text-zinc-100"
+          : "pt-1 text-sm font-semibold text-zinc-200";
+    return <div className={headingClass}>{block.plainText}</div>;
+  }
+
+  if (block.blockType === "taskItem") {
+    const status = block.task?.status ?? "TODO";
+    const isDone = status === "DONE";
+    const isCanceled = status === "CANCELED";
+    const isDoing = status === "DOING";
+    return (
+      <div
+        style={{ paddingLeft: `${indentPx}px` }}
+        className="flex items-start gap-2.5 text-sm leading-relaxed"
+      >
+        <span
+          className={`mt-1 flex h-4 w-4 shrink-0 items-center justify-center rounded border text-[10px] ${
+            isDone
+              ? "border-emerald-500/60 bg-emerald-500/20 text-emerald-300"
+              : isDoing
+                ? "border-amber-500/60 bg-amber-500/20 text-amber-300"
+                : isCanceled
+                  ? "border-rose-500/40 bg-rose-500/10 text-rose-400"
+                  : "border-zinc-700 bg-zinc-900 text-transparent"
+          }`}
+        >
+          {isDone ? (
+            <Check className="h-3 w-3" />
+          ) : isDoing ? (
+            "•"
+          ) : isCanceled ? (
+            "×"
+          ) : null}
+        </span>
+        <div className="min-w-0 flex-1">
+          <span
+            className={
+              isDone || isCanceled
+                ? "text-zinc-500 line-through"
+                : "text-zinc-200"
+            }
+          >
+            {block.plainText}
+          </span>
+          {(block.task?.priority || block.task?.scheduledAt) && (
+            <div className="mt-0.5 flex flex-wrap gap-1.5 text-[10px]">
+              {block.task.priority && (
+                <span className="rounded bg-zinc-800 px-1.5 py-0.5 font-mono text-amber-300">
+                  P{block.task.priority}
+                </span>
+              )}
+              {block.task.scheduledAt && (
+                <span className="rounded bg-zinc-800 px-1.5 py-0.5 font-mono text-sky-300">
+                  {block.task.scheduledAt}
+                </span>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  if (block.blockType === "listItem") {
+    return (
+      <div
+        style={{ paddingLeft: `${indentPx}px` }}
+        className="flex items-start gap-2 text-sm leading-relaxed text-zinc-200"
+      >
+        <span className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-indigo-400/70" />
+        <span className="min-w-0 flex-1">{block.plainText}</span>
+      </div>
+    );
+  }
+
+  if (block.blockType === "codeBlock") {
+    return (
+      <div className="overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900/70">
+        {block.codeLang && (
+          <div className="border-b border-zinc-800 px-3 py-1 font-mono text-[10px] uppercase text-zinc-500">
+            {block.codeLang}
+          </div>
+        )}
+        <pre className="overflow-x-auto p-3 font-mono text-xs leading-relaxed text-zinc-300">
+          {block.rawContent}
+        </pre>
+      </div>
+    );
+  }
+
+  if (block.blockType === "quote") {
+    return (
+      <blockquote className="border-l-2 border-indigo-500/60 pl-3 text-sm italic leading-relaxed text-zinc-300">
+        {block.plainText}
+      </blockquote>
+    );
+  }
+
+  if (block.blockType === "callout") {
+    return (
+      <div className="rounded-xl border border-indigo-500/30 bg-indigo-500/10 px-3.5 py-2.5 text-sm leading-relaxed text-indigo-100">
+        {block.plainText}
+      </div>
+    );
+  }
+
+  return (
+    <p
+      style={{ paddingLeft: `${indentPx}px` }}
+      className="text-sm leading-relaxed text-zinc-200"
+    >
+      {block.plainText}
+    </p>
   );
 }
 

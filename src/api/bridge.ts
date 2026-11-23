@@ -348,4 +348,26 @@ export const vaultApi = {
     }
     await httpPost("/api/canvas/delete", { relPath });
   },
+
+  async switchVault(vaultPath: string): Promise<VaultOverview> {
+    if (isTauriRuntime()) return invoke("switch_vault", { vaultPath });
+    return httpPost("/api/vault/switch", { vaultPath });
+  },
+
+  async saveAsset(filename: string, base64Data: string): Promise<string> {
+    if (isTauriRuntime()) return invoke("save_asset", { filename, base64Data });
+    const res = await httpPost<{ relPath: string }>("/api/assets/upload", {
+      filename,
+      base64Data,
+    });
+    return res.relPath;
+  },
+
+  async getAssetDataUrl(relPath: string): Promise<string> {
+    if (isTauriRuntime()) return invoke("read_asset_data_url", { relPath });
+    const res = await httpGet<{ dataUrl: string }>(
+      `/api/assets/data-url?path=${encodeURIComponent(relPath)}`,
+    );
+    return res.dataUrl;
+  },
 };

@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager, State};
 use vault_core::model::{
@@ -13,7 +13,25 @@ use vault_core::VaultEngine;
 
 struct AppState {
     engine: Arc<Mutex<VaultEngine>>,
-    _watcher: Option<VaultWatcher>,
+    watcher: Mutex<Option<VaultWatcher>>,
+}
+
+fn spawn_vault_watcher(
+    vault_dir: &Path,
+    engine: Arc<Mutex<VaultEngine>>,
+    app_handle: tauri::AppHandle,
+) -> Option<VaultWatcher> {
+    VaultWatcher::start(vault_dir, move || {
+        if let Ok(mut eng) = engine.lock() {
+            if let Ok(stats) = eng.reindex_vault() {
+                if stats.files_reindexed > 0 || stats.files_deleted > 0 {
+                    let rev = eng.revision();
+                    let _ = app_handle.emit("vault-changed", rev);
+                }
+            }
+        }
+    })
+    .ok()
 }
 
 fn map_err<E: std::fmt::Display>(err: E) -> String {
@@ -350,6 +368,47 @@ fn delete_canvas(state: State<'_, AppState>, rel_path: String) -> Result<(), Str
     engine.delete_canvas(&rel_path).map_err(map_err)
 }
 
+#[tauri::command]
+fn switch_vault(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    vault_path: String,
+) -> Result<VaultOverview, String> {
+    let (overview, new_vault_dir) = {
+        let mut engine = state.engine.lock().map_err(map_err)?;
+        let overview = engine.switch_vault(&vault_path).map_err(map_err)?;
+        let dir = engine.vault_path().to_path_buf();
+        (overview, dir)
+    };
+
+    if let Ok(mut guard) = state.watcher.lock() {
+        *guard = None;
+        *guard = spawn_vault_watcher(&new_vault_dir, Arc::clone(&state.engine), app.clone());
+    }
+
+    let _ = app.emit("vault-changed", overview.revision);
+    Ok(overview)
+}
+
+#[tauri::command]
+fn save_asset(
+    state: State<'_, AppState>,
+    filename: String,
+    base64_data: String,
+) -> Result<String, String> {
+    let mut engine = state.engine.lock().map_err(map_err)?;
+    engine.save_asset(&filename, &base64_data).map_err(map_err)
+}
+
+#[tauri::command]
+fn read_asset_data_url(
+    state: State<'_, AppState>,
+    rel_path: String,
+) -> Result<String, String> {
+    let engine = state.engine.lock().map_err(map_err)?;
+    engine.read_asset_data_url(&rel_path).map_err(map_err)
+}
+
 fn resolve_default_vault_path(app: &tauri::App) -> PathBuf {
     if let Ok(env_dir) = std::env::var("OXIDEVAULT_DIR") {
         return PathBuf::from(env_dir);
@@ -376,23 +435,15 @@ pub fn run() {
                 engine.seed_demo()?;
             }
             let engine_arc = Arc::new(Mutex::new(engine));
-            let watcher_engine = Arc::clone(&engine_arc);
-            let app_handle = app.handle().clone();
-            let watcher = VaultWatcher::start(&vault_dir, move || {
-                if let Ok(mut eng) = watcher_engine.lock() {
-                    if let Ok(stats) = eng.reindex_vault() {
-                        if stats.files_reindexed > 0 || stats.files_deleted > 0 {
-                            let rev = eng.revision();
-                            let _ = app_handle.emit("vault-changed", rev);
-                        }
-                    }
-                }
-            })
-            .ok();
+            let watcher = spawn_vault_watcher(
+                &vault_dir,
+                Arc::clone(&engine_arc),
+                app.handle().clone(),
+            );
 
             app.manage(AppState {
                 engine: engine_arc,
-                _watcher: watcher,
+                watcher: Mutex::new(watcher),
             });
             Ok(())
         })
@@ -436,6 +487,9 @@ pub fn run() {
             update_document_property,
             create_canvas,
             delete_canvas,
+            switch_vault,
+            save_asset,
+            read_asset_data_url,
         ])
         .run(tauri::generate_context!())
         .expect("error while running OxideVault Tauri application");

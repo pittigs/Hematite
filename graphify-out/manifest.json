@@ -12,10 +12,10 @@
     "semantic_hash": "b2d71f6a98acf2707e698917be40fa01"
   },
   "crates/vault-cli/src/main.rs": {
-    "mtime": 1795448637.562077,
-    "seen": 1795448854.2306845,
-    "ast_hash": "c6b6faf3f087bd0c9b2c0118c122984b",
-    "semantic_hash": "c6b6faf3f087bd0c9b2c0118c122984b"
+    "mtime": 1795450602.196309,
+    "seen": 1795450930.2883594,
+    "ast_hash": "3607e01f352a1084eff0a414db32e224",
+    "semantic_hash": "3607e01f352a1084eff0a414db32e224"
   },
   "crates/vault-core/Cargo.toml": {
     "mtime": 1794922002.8390815,
@@ -42,22 +42,22 @@
     "semantic_hash": "9fcab4f6cac57b831b0d1e6d1dbf3405"
   },
   "crates/vault-core/src/fs_utils.rs": {
-    "mtime": 1795249708.78331,
-    "seen": 1795448854.2306883,
-    "ast_hash": "f040465da5de07167cace4a339f40537",
-    "semantic_hash": "f040465da5de07167cace4a339f40537"
+    "mtime": 1795450427.5060272,
+    "seen": 1795450930.2883685,
+    "ast_hash": "3795dba6e62c83d01d460c598e8ad87a",
+    "semantic_hash": "3795dba6e62c83d01d460c598e8ad87a"
   },
   "crates/vault-core/src/graph.rs": {
-    "mtime": 1795446881.6905437,
-    "seen": 1795448854.2306888,
-    "ast_hash": "22e87e05dceb129a8213fd5fed3099da",
-    "semantic_hash": "22e87e05dceb129a8213fd5fed3099da"
+    "mtime": 1795450429.3410833,
+    "seen": 1795450930.2883694,
+    "ast_hash": "c5b9c8872ded743ef79a10f279965f44",
+    "semantic_hash": "c5b9c8872ded743ef79a10f279965f44"
   },
   "crates/vault-core/src/lib.rs": {
-    "mtime": 1795448614.9642885,
-    "seen": 1795448854.2306893,
-    "ast_hash": "b6b00d006c91395c9b4a073f3243eeb3",
-    "semantic_hash": "b6b00d006c91395c9b4a073f3243eeb3"
+    "mtime": 1795450594.9410915,
+    "seen": 1795450930.2883704,
+    "ast_hash": "67260dff19bc47701066f99832355a15",
+    "semantic_hash": "67260dff19bc47701066f99832355a15"
   },
   "crates/vault-core/src/model.rs": {
     "mtime": 1795448206.9064417,
@@ -132,10 +132,10 @@
     "semantic_hash": "a3a32061a4992819efadf828ae12c84a"
   },
   "src-tauri/src/lib.rs": {
-    "mtime": 1795448544.7487915,
-    "seen": 1795448854.2306972,
-    "ast_hash": "dd19453df27c74a3d9ba1b088f86e45e",
-    "semantic_hash": "dd19453df27c74a3d9ba1b088f86e45e"
+    "mtime": 1795450596.3941352,
+    "seen": 1795450930.288384,
+    "ast_hash": "d35f8359cc943161a832a0803fb3072d",
+    "semantic_hash": "d35f8359cc943161a832a0803fb3072d"
   },
   "src-tauri/src/main.rs": {
     "mtime": 1794923223.4725828,
@@ -150,16 +150,16 @@
     "semantic_hash": "31754fa9a520cb1348f7e56396ff6359"
   },
   "src/App.tsx": {
-    "mtime": 1795448821.9862816,
-    "seen": 1795448854.230699,
-    "ast_hash": "9174104cbab0ff80575494fc7dc76b19",
-    "semantic_hash": "9174104cbab0ff80575494fc7dc76b19"
+    "mtime": 1795450442.67349,
+    "seen": 1795450930.288387,
+    "ast_hash": "2e0276f9488a3f19b845099391a0dea6",
+    "semantic_hash": "2e0276f9488a3f19b845099391a0dea6"
   },
   "src/api/bridge.ts": {
-    "mtime": 1795447521.8561962,
-    "seen": 1795448854.2306995,
-    "ast_hash": "bee35a74fa5fda81265673b4a0dca5da",
-    "semantic_hash": "bee35a74fa5fda81265673b4a0dca5da"
+    "mtime": 1795450188.664599,
+    "seen": 1795450930.288388,
+    "ast_hash": "cb6b06959d33a2ba801bf7c23c55272b",
+    "semantic_hash": "cb6b06959d33a2ba801bf7c23c55272b"
   },
   "src/components/AnalyticsModal.tsx": {
     "mtime": 1795448174.3249989,
@@ -180,16 +180,16 @@
     "semantic_hash": "fc75a27caf1c186ddb204b29dc98f56c"
   },
   "src/components/DatabaseView.tsx": {
-    "mtime": 1795448224.6042116,
-    "seen": 1795448854.230702,
-    "ast_hash": "300b084da7ed64bfd2317804833e0b14",
-    "semantic_hash": "300b084da7ed64bfd2317804833e0b14"
+    "mtime": 1795450315.3755753,
+    "seen": 1795450930.2883918,
+    "ast_hash": "68a93d44cd73376e0e5863eb188e1e4a",
+    "semantic_hash": "68a93d44cd73376e0e5863eb188e1e4a"
   },
   "src/components/GraphView.tsx": {
-    "mtime": 1795448288.6589215,
-    "seen": 1795448854.2307026,
-    "ast_hash": "ca36b3165a5096014c8c4df8e4d6fd07",
-    "semantic_hash": "ca36b3165a5096014c8c4df8e4d6fd07"
+    "mtime": 1795450375.6504378,
+    "seen": 1795450930.2883928,
+    "ast_hash": "a810b6588d73fba376141011dc1e03b8",
+    "semantic_hash": "a810b6588d73fba376141011dc1e03b8"
   },
   "src/components/HistoryModal.tsx": {
     "mtime": 1795448191.4177601,
@@ -198,10 +198,10 @@
     "semantic_hash": "c6f93036a2f120c38ec103bc090e577e"
   },
   "src/components/HybridEditor.tsx": {
-    "mtime": 1795448394.2101564,
-    "seen": 1795448854.2307036,
-    "ast_hash": "420819afa8c2dcf6727e8eed17e441ed",
-    "semantic_hash": "420819afa8c2dcf6727e8eed17e441ed"
+    "mtime": 1795450846.6575606,
+    "seen": 1795450930.2883942,
+    "ast_hash": "c692c33abc4b0f9c7e11e067d04116b3",
+    "semantic_hash": "c692c33abc4b0f9c7e11e067d04116b3"
   },
   "src/components/InfiniteCanvas.tsx": {
     "mtime": 1795448289.804969,
@@ -258,10 +258,10 @@
     "semantic_hash": "2a877a39c44ea2448133e777fa8a62b2"
   },
   "src/utils/markdownRich.ts": {
-    "mtime": 1795448188.2946217,
-    "seen": 1795448854.2307098,
-    "ast_hash": "7033f91d0db603b4ee4011c904910d50",
-    "semantic_hash": "7033f91d0db603b4ee4011c904910d50"
+    "mtime": 1795450596.3661342,
+    "seen": 1795450930.2884066,
+    "ast_hash": "194c75b82248aef5188ee41e6c8b33cf",
+    "semantic_hash": "194c75b82248aef5188ee41e6c8b33cf"
   },
   "tsconfig.json": {
     "mtime": 1794922154.334757,
@@ -328,5 +328,59 @@
     "seen": 1795448854.2307158,
     "ast_hash": "b57b1d4545d7d921bda147ac5f6fdf52",
     "semantic_hash": "b57b1d4545d7d921bda147ac5f6fdf52"
+  },
+  "crates/vault-core/src/assets.rs": {
+    "mtime": 1795450436.3872983,
+    "seen": 1795450930.288363,
+    "ast_hash": "c0044ec707df828f1c8a1e159b36af5d",
+    "semantic_hash": "c0044ec707df828f1c8a1e159b36af5d"
+  },
+  "crates/vault-core/src/frontmatter.rs": {
+    "mtime": 1795450434.1802309,
+    "seen": 1795450930.2883673,
+    "ast_hash": "dd45604a9845127e0615eadb327726ab",
+    "semantic_hash": "dd45604a9845127e0615eadb327726ab"
+  },
+  "crates/vault-core/src/recurrence.rs": {
+    "mtime": 1795450614.6046805,
+    "seen": 1795450930.2883728,
+    "ast_hash": "13d46b80876db7bdf427c12f07996bfa",
+    "semantic_hash": "13d46b80876db7bdf427c12f07996bfa"
+  },
+  "crates/vault-core/src/trash.rs": {
+    "mtime": 1795450430.8671298,
+    "seen": 1795450930.2883744,
+    "ast_hash": "6d019d1ce2fedd90cc44ed7a5b447a48",
+    "semantic_hash": "6d019d1ce2fedd90cc44ed7a5b447a48"
+  },
+  "src/components/VaultSwitcherModal.tsx": {
+    "mtime": 1795450355.5568187,
+    "seen": 1795450930.2884014,
+    "ast_hash": "bfcdc218ca808812e0d35b4c6ba0f42d",
+    "semantic_hash": "bfcdc218ca808812e0d35b4c6ba0f42d"
+  },
+  "src/components/editor/AutocompleteMenu.tsx": {
+    "mtime": 1795450435.2212627,
+    "seen": 1795450930.2884018,
+    "ast_hash": "03f96f97b649e9dff5a5f55816226f12",
+    "semantic_hash": "03f96f97b649e9dff5a5f55816226f12"
+  },
+  "src/components/editor/FindReplaceBar.tsx": {
+    "mtime": 1795450434.380237,
+    "seen": 1795450930.2884028,
+    "ast_hash": "791475a4715625e56eb5dd989043ea60",
+    "semantic_hash": "791475a4715625e56eb5dd989043ea60"
+  },
+  "src/components/editor/PreviewBlock.tsx": {
+    "mtime": 1795450789.1778672,
+    "seen": 1795450930.2884033,
+    "ast_hash": "54bc5b283c6c595d589d374d2404991a",
+    "semantic_hash": "54bc5b283c6c595d589d374d2404991a"
+  },
+  "src/components/editor/editorHelpers.ts": {
+    "mtime": 1795450841.1143975,
+    "seen": 1795450930.2884037,
+    "ast_hash": "53d12f6d1e28e03c5abadba665a66897",
+    "semantic_hash": "53d12f6d1e28e03c5abadba665a66897"
   }
 }

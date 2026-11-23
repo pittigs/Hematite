@@ -181,4 +181,80 @@ describe("markdownRich utilities", () => {
     assert.equal(html.includes("<strong>&lt;img src=x onerror=alert(1)&gt;</strong>"), true);
     assert.equal(html.includes("callout-caution"), true);
   });
+
+  it("parses wiki-style and markdown relative imageEmbed tokens", () => {
+    const tokens = parseInlineTokens(
+      "Vorher ![[assets/shot.png]] Mitte ![[assets/shot.png|Diagramm]] und ![Logo](assets/logo.png) sowie ![Remote](https://example.com/pic.png) und [[Normale Notiz]].",
+    );
+
+    const images = tokens.filter((t) => t.type === "imageEmbed");
+    assert.deepEqual(images, [
+      { type: "imageEmbed", path: "assets/shot.png", alt: null },
+      { type: "imageEmbed", path: "assets/shot.png", alt: "Diagramm" },
+      { type: "imageEmbed", path: "assets/logo.png", alt: "Logo" },
+    ]);
+
+    assert.equal(
+      tokens.some(
+        (t) =>
+          t.type === "externalLink" &&
+          t.label === "Remote" &&
+          t.url === "https://example.com/pic.png",
+      ),
+      true,
+    );
+    assert.equal(
+      tokens.some(
+        (t) =>
+          t.type === "wikiLink" &&
+          t.target === "Normale Notiz" &&
+          t.alias === null,
+      ),
+      true,
+    );
+  });
+
+  it("renders imageEmbed tokens safely in standalone HTML export", () => {
+    const html = renderDocumentToStandaloneHtml("Bilder", [
+      {
+        id: "b1",
+        docId: "d1",
+        parentBlockId: null,
+        depth: 0,
+        sortOrder: 1,
+        blockType: "paragraph",
+        headingLevel: null,
+        codeLang: null,
+        hasExplicitId: false,
+        rawContent:
+          "![[assets/shot.png]] ![[assets/shot.png|Diagramm <script>x</script>]] ![Logo](assets/logo.png)",
+        plainText: "",
+        properties: {},
+        tags: [],
+        collapsed: false,
+        task: null,
+        updatedAt: 0,
+      },
+    ]);
+
+    assert.equal(
+      html.includes(
+        '<figure class="image-embed"><img src="assets/shot.png" alt="assets/shot.png" /></figure>',
+      ),
+      true,
+    );
+    assert.equal(
+      html.includes(
+        '<figure class="image-embed"><img src="assets/shot.png" alt="Diagramm &lt;script&gt;x&lt;/script&gt;" /><figcaption>Diagramm &lt;script&gt;x&lt;/script&gt;</figcaption></figure>',
+      ),
+      true,
+    );
+    assert.equal(
+      html.includes(
+        '<figure class="image-embed"><img src="assets/logo.png" alt="Logo" /><figcaption>Logo</figcaption></figure>',
+      ),
+      true,
+    );
+    assert.equal(html.includes("<script>x</script>"), false);
+  });
 });

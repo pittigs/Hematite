@@ -10,7 +10,7 @@ use vault_core::model::{Block, CanvasData, DatabaseQuery, Document, TaskStatus};
 use vault_core::watcher::VaultWatcher;
 use vault_core::VaultEngine;
 
-const MAX_POST_BODY_BYTES: u64 = 10 * 1024 * 1024;
+const MAX_POST_BODY_BYTES: u64 = 24 * 1024 * 1024;
 const DEFAULT_CORS_ORIGIN: &str = "http://localhost:5173";
 
 fn main() -> Result<()> {
@@ -257,20 +257,41 @@ struct UpdatePropertyReq {
     value: String,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SwitchVaultReq {
+    vault_path: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UploadAssetReq {
+    filename: String,
+    base64_data: String,
+}
+
+fn spawn_cli_watcher(
+    vault_path: &std::path::Path,
+    shared: Arc<Mutex<VaultEngine>>,
+) -> Option<VaultWatcher> {
+    VaultWatcher::start(vault_path, move || {
+        if let Ok(mut eng) = shared.lock() {
+            let _ = eng.reindex_vault();
+        }
+    })
+    .ok()
+}
+
 fn serve_http(vault_path: PathBuf, port: u16, api_token: Option<String>) -> Result<()> {
     let mut engine = VaultEngine::open(&vault_path, None)?;
     if engine.list_documents()?.is_empty() {
         engine.seed_demo()?;
     }
     let shared = Arc::new(Mutex::new(engine));
-
-    let watcher_shared = Arc::clone(&shared);
-    let _watcher = VaultWatcher::start(&vault_path, move || {
-        if let Ok(mut eng) = watcher_shared.lock() {
-            let _ = eng.reindex_vault();
-        }
-    })
-    .ok();
+    let watcher = Arc::new(Mutex::new(spawn_cli_watcher(
+        &vault_path,
+        Arc::clone(&shared),
+    )));
 
     let addr = format!("127.0.0.1:{}", port);
     let server = Server::http(&addr).map_err(|e| anyhow!("HTTP bind error on {}: {}", addr, e))?;
@@ -314,7 +335,7 @@ fn serve_http(vault_path: PathBuf, port: u16, api_token: Option<String>) -> Resu
             }
         }
 
-        let response = match handle_request(&shared, &mut req) {
+        let response = match handle_request(&shared, Some(&watcher), &mut req) {
             Ok(json_str) => {
                 let mut resp = Response::from_string(json_str).with_status_code(200);
                 resp.add_header(
@@ -423,7 +444,11 @@ fn read_capped_body<R: Read>(reader: R, max_bytes: u64) -> Result<String> {
     String::from_utf8(buf).map_err(|e| anyhow!("Invalid UTF-8 request body: {}", e))
 }
 
-fn handle_request(shared: &Arc<Mutex<VaultEngine>>, req: &mut Request) -> Result<String> {
+fn handle_request(
+    shared: &Arc<Mutex<VaultEngine>>,
+    watcher: Option<&Arc<Mutex<Option<VaultWatcher>>>>,
+    req: &mut Request,
+) -> Result<String> {
     let url = req.url().to_string();
     let method = req.method().clone();
 
@@ -433,11 +458,12 @@ fn handle_request(shared: &Arc<Mutex<VaultEngine>>, req: &mut Request) -> Result
         String::new()
     };
 
-    dispatch_route(shared, method, &url, &body_str)
+    dispatch_route(shared, watcher, method, &url, &body_str)
 }
 
 fn dispatch_route(
     shared: &Arc<Mutex<VaultEngine>>,
+    watcher: Option<&Arc<Mutex<Option<VaultWatcher>>>>,
     method: Method,
     url: &str,
     body_str: &str,
@@ -448,6 +474,23 @@ fn dispatch_route(
     if path == "/api/benchmark/100k" && method == Method::Post {
         let report = VaultEngine::run_100k_benchmark()?;
         return Ok(serde_json::to_string(&report)?);
+    }
+
+    if path == "/api/vault/switch" && method == Method::Post {
+        let payload: SwitchVaultReq = serde_json::from_str(body_str)?;
+        let (overview, new_vault_dir) = {
+            let mut engine = shared.lock().map_err(|_| anyhow!("Engine lock poisoned"))?;
+            let overview = engine.switch_vault(&payload.vault_path)?;
+            let dir = engine.vault_path().to_path_buf();
+            (overview, dir)
+        };
+        if let Some(watcher_arc) = watcher {
+            if let Ok(mut guard) = watcher_arc.lock() {
+                *guard = None;
+                *guard = spawn_cli_watcher(&new_vault_dir, Arc::clone(shared));
+            }
+        }
+        return Ok(serde_json::to_string(&overview)?);
     }
 
     let mut engine = shared.lock().map_err(|_| anyhow!("Engine lock poisoned"))?;
@@ -632,6 +675,18 @@ fn dispatch_route(
             Ok(serde_json::to_string(&engine.get_vault_analytics()?)?)
         }
         (Method::Post, "/api/optimize") => Ok(serde_json::to_string(&engine.optimize_index()?)?),
+        (Method::Post, "/api/assets/upload") => {
+            let payload: UploadAssetReq = serde_json::from_str(body_str)?;
+            let rel_path = engine.save_asset(&payload.filename, &payload.base64_data)?;
+            Ok(serde_json::json!({ "relPath": rel_path }).to_string())
+        }
+        (Method::Get, "/api/assets/data-url") => {
+            let rel_path = params
+                .get("path")
+                .ok_or_else(|| anyhow!("Missing path query param"))?;
+            let data_url = engine.read_asset_data_url(rel_path)?;
+            Ok(serde_json::json!({ "dataUrl": data_url }).to_string())
+        }
         _ => Err(anyhow!("Unknown endpoint: {}", path)),
     }
 }
@@ -729,6 +784,7 @@ mod tests {
 
     #[test]
     fn read_capped_body_enforces_limit() {
+        assert_eq!(MAX_POST_BODY_BYTES, 24 * 1024 * 1024);
         let ok = read_capped_body(Cursor::new("hello"), 5).unwrap();
         assert_eq!(ok, "hello");
         assert!(read_capped_body(Cursor::new("hello!"), 5).is_err());
@@ -744,18 +800,24 @@ mod tests {
                 .as_nanos()
         ));
         let vault_dir = dir.join("vault");
+        let vault_dir_b = dir.join("vault-b");
         let db_path = dir.join("index.sqlite");
         let engine = VaultEngine::open(&vault_dir, Some(db_path)).unwrap();
         let shared = Arc::new(Mutex::new(engine));
+        let watcher = Arc::new(Mutex::new(spawn_cli_watcher(
+            &vault_dir,
+            Arc::clone(&shared),
+        )));
 
         // Revision endpoint
-        let rev_json = dispatch_route(&shared, Method::Get, "/api/revision", "").unwrap();
+        let rev_json = dispatch_route(&shared, None, Method::Get, "/api/revision", "").unwrap();
         let rev_val: serde_json::Value = serde_json::from_str(&rev_json).unwrap();
         assert_eq!(rev_val["revision"].as_u64(), Some(1));
 
         // Create two documents, test property update, snapshots, unlinked mentions, analytics, optimize
         dispatch_route(
             &shared,
+            None,
             Method::Post,
             "/api/document/save-markdown",
             r##"{"relPath":"Alpha.md","markdown":"# Alpha\n\nTarget note.\n"}"##,
@@ -763,6 +825,7 @@ mod tests {
         .unwrap();
         dispatch_route(
             &shared,
+            None,
             Method::Post,
             "/api/document/save-markdown",
             r##"{"relPath":"Beta.md","markdown":"# Beta\n\nMentions Alpha without link.\n"}"##,
@@ -772,6 +835,7 @@ mod tests {
         // Update frontmatter property
         let prop_json = dispatch_route(
             &shared,
+            None,
             Method::Post,
             "/api/document/property",
             r#"{"relPath":"Alpha.md","key":"status","value":"active"}"#,
@@ -782,12 +846,13 @@ mod tests {
 
         // List & restore snapshots
         let snaps_json =
-            dispatch_route(&shared, Method::Get, "/api/snapshots?path=Alpha.md", "").unwrap();
+            dispatch_route(&shared, None, Method::Get, "/api/snapshots?path=Alpha.md", "").unwrap();
         let snaps: Vec<serde_json::Value> = serde_json::from_str(&snaps_json).unwrap();
         assert_eq!(snaps.len(), 2);
         let first_snap_id = snaps.last().unwrap()["id"].as_i64().unwrap();
         let restored_snap_json = dispatch_route(
             &shared,
+            None,
             Method::Post,
             "/api/snapshots/restore",
             &format!(r#"{{"snapshotId":{}}}"#, first_snap_id),
@@ -799,6 +864,7 @@ mod tests {
         let alpha_id = prop_doc["document"]["id"].as_str().unwrap();
         let mentions_json = dispatch_route(
             &shared,
+            None,
             Method::Get,
             &format!("/api/unlinked-mentions?docId={}", alpha_id),
             "",
@@ -809,6 +875,7 @@ mod tests {
         let blk_id = mentions[0]["sourceBlockId"].as_str().unwrap();
         dispatch_route(
             &shared,
+            None,
             Method::Post,
             "/api/unlinked-mentions/link",
             &format!(
@@ -819,6 +886,7 @@ mod tests {
         .unwrap();
         let mentions_after_json = dispatch_route(
             &shared,
+            None,
             Method::Get,
             &format!("/api/unlinked-mentions?docId={}", alpha_id),
             "",
@@ -829,16 +897,19 @@ mod tests {
         assert!(mentions_after.is_empty());
 
         // Analytics & optimize
-        let analytics_json = dispatch_route(&shared, Method::Get, "/api/analytics", "").unwrap();
+        let analytics_json =
+            dispatch_route(&shared, None, Method::Get, "/api/analytics", "").unwrap();
         let analytics: serde_json::Value = serde_json::from_str(&analytics_json).unwrap();
         assert_eq!(analytics["totalDocuments"].as_u64(), Some(2));
-        let opt_json = dispatch_route(&shared, Method::Post, "/api/optimize", "{}").unwrap();
+        let opt_json =
+            dispatch_route(&shared, None, Method::Post, "/api/optimize", "{}").unwrap();
         let opt: serde_json::Value = serde_json::from_str(&opt_json).unwrap();
         assert!(opt["dbSizeAfterBytes"].as_u64().is_some());
 
         // Canvas create & delete
         let canvas_json = dispatch_route(
             &shared,
+            None,
             Method::Post,
             "/api/canvas/create",
             r#"{"relPath":"canvas/TestBoard"}"#,
@@ -847,6 +918,7 @@ mod tests {
         assert!(canvas_json.contains("canvas/TestBoard.canvas"));
         dispatch_route(
             &shared,
+            None,
             Method::Post,
             "/api/canvas/delete",
             r#"{"relPath":"canvas/TestBoard.canvas"}"#,
@@ -854,29 +926,32 @@ mod tests {
         .unwrap();
 
         // Sync simulate, apply, compact
-        dispatch_route(&shared, Method::Post, "/api/sync/simulate", "{}").unwrap();
-        let apply_json = dispatch_route(&shared, Method::Post, "/api/sync/apply", "{}").unwrap();
+        dispatch_route(&shared, None, Method::Post, "/api/sync/simulate", "{}").unwrap();
+        let apply_json =
+            dispatch_route(&shared, None, Method::Post, "/api/sync/apply", "{}").unwrap();
         let apply: serde_json::Value = serde_json::from_str(&apply_json).unwrap();
         assert_eq!(apply["opsApplied"].as_u64(), Some(2));
         let compact_json =
-            dispatch_route(&shared, Method::Post, "/api/sync/compact", "{}").unwrap();
+            dispatch_route(&shared, None, Method::Post, "/api/sync/compact", "{}").unwrap();
         let compact: serde_json::Value = serde_json::from_str(&compact_json).unwrap();
         assert!(compact["filesAfter"].as_u64().is_some());
 
         // Trash delete, list, restore, and empty
         dispatch_route(
             &shared,
+            None,
             Method::Post,
             "/api/document/delete",
             r#"{"relPath":"Beta.md"}"#,
         )
         .unwrap();
-        let trash_json = dispatch_route(&shared, Method::Get, "/api/trash", "").unwrap();
+        let trash_json = dispatch_route(&shared, None, Method::Get, "/api/trash", "").unwrap();
         let trash: Vec<serde_json::Value> = serde_json::from_str(&trash_json).unwrap();
         assert_eq!(trash.len(), 1);
         let trash_id = trash[0]["trashId"].as_str().unwrap();
         dispatch_route(
             &shared,
+            None,
             Method::Post,
             "/api/trash/restore",
             &format!(r#"{{"trashId":"{}"}}"#, trash_id),
@@ -886,15 +961,64 @@ mod tests {
         // Delete again and empty trash
         dispatch_route(
             &shared,
+            None,
             Method::Post,
             "/api/document/delete",
             r#"{"relPath":"Beta.md"}"#,
         )
         .unwrap();
-        let empty_json = dispatch_route(&shared, Method::Post, "/api/trash/empty", "{}").unwrap();
+        let empty_json =
+            dispatch_route(&shared, None, Method::Post, "/api/trash/empty", "{}").unwrap();
         let empty: serde_json::Value = serde_json::from_str(&empty_json).unwrap();
         assert_eq!(empty["removed"].as_u64(), Some(1));
 
+        // Assets upload & data-url read
+        let upload_json = dispatch_route(
+            &shared,
+            None,
+            Method::Post,
+            "/api/assets/upload",
+            r#"{"filename":"diagram.png","base64Data":"data:image/png;base64,iVBORw0KGgo="}"#,
+        )
+        .unwrap();
+        let upload_val: serde_json::Value = serde_json::from_str(&upload_json).unwrap();
+        assert_eq!(upload_val["relPath"].as_str(), Some("assets/diagram.png"));
+
+        let data_url_json = dispatch_route(
+            &shared,
+            None,
+            Method::Get,
+            "/api/assets/data-url?path=assets%2Fdiagram.png",
+            "",
+        )
+        .unwrap();
+        let data_url_val: serde_json::Value = serde_json::from_str(&data_url_json).unwrap();
+        assert_eq!(
+            data_url_val["dataUrl"].as_str(),
+            Some("data:image/png;base64,iVBORw0KGgo=")
+        );
+
+        // Multi-vault switch with watcher replacement
+        let rev_before = shared.lock().unwrap().revision();
+        let switch_body = serde_json::json!({
+            "vaultPath": vault_dir_b.to_string_lossy()
+        })
+        .to_string();
+        let switch_json = dispatch_route(
+            &shared,
+            Some(&watcher),
+            Method::Post,
+            "/api/vault/switch",
+            &switch_body,
+        )
+        .unwrap();
+        let switch_val: serde_json::Value = serde_json::from_str(&switch_json).unwrap();
+        assert_eq!(switch_val["totalDocuments"].as_u64(), Some(0));
+        assert_eq!(switch_val["revision"].as_u64(), Some(rev_before + 1));
+        assert!(watcher.lock().unwrap().is_some());
+
+        // Drop watcher before cleaning up temp dir
+        *watcher.lock().unwrap() = None;
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

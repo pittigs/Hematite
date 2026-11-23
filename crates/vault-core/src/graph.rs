@@ -383,7 +383,9 @@ fn compute_force_directed_layout(adj: &[Vec<usize>], n: usize) -> Vec<(f64, f64)
 
 #[cfg(test)]
 mod tests {
-    use crate::VaultEngine;
+    use super::{build_graph_snapshot, find_shortest_path};
+    use crate::db::Database;
+    use std::fs;
     use tempfile::tempdir;
 
     #[test]
@@ -391,36 +393,29 @@ mod tests {
         let dir = tempdir().unwrap();
         let vault = dir.path().join("vault");
         let db_path = dir.path().join("index.sqlite");
-        let mut engine = VaultEngine::open(&vault, Some(db_path)).unwrap();
+        fs::create_dir_all(&vault).unwrap();
 
-        engine
-            .save_markdown_document("A.md", "# A\n\nLink zu [[B]] #rust\n")
-            .unwrap();
-        engine
-            .save_markdown_document("B.md", "# B\n\nLink zu [[C]]\n")
-            .unwrap();
-        engine
-            .save_markdown_document("C.md", "# C\n\nEnde.\n")
-            .unwrap();
-        engine
-            .save_markdown_document("Insel.md", "# Insel\n\nKeine Links.\n")
-            .unwrap();
+        fs::write(vault.join("A.md"), "# A\n\nLink zu [[B]] #rust\n").unwrap();
+        fs::write(vault.join("B.md"), "# B\n\nLink zu [[C]]\n").unwrap();
+        fs::write(vault.join("C.md"), "# C\n\nEnde.\n").unwrap();
+        fs::write(vault.join("Insel.md"), "# Insel\n\nKeine Links.\n").unwrap();
 
-        let snap_with_tags = engine.get_graph_snapshot(true).unwrap();
-        let snap_no_tags = engine.get_graph_snapshot(false).unwrap();
+        let mut db = Database::open(&db_path).unwrap();
+        db.sync_vault(&vault).unwrap();
+
+        let snap_with_tags = build_graph_snapshot(&db, true).unwrap();
+        let snap_no_tags = build_graph_snapshot(&db, false).unwrap();
         assert!(snap_with_tags.nodes.len() > snap_no_tags.nodes.len());
         assert_eq!(snap_no_tags.nodes.len(), 4);
 
-        let docs = engine.list_documents().unwrap();
+        let docs = db.list_document_summaries().unwrap();
         let id_of = |name: &str| docs.iter().find(|d| d.path == name).unwrap().id.clone();
 
-        let path_ac = engine.find_graph_path(&id_of("A.md"), &id_of("C.md")).unwrap();
+        let path_ac = find_shortest_path(&db, &id_of("A.md"), &id_of("C.md")).unwrap();
         assert!(path_ac.found);
         assert_eq!(path_ac.hops, 2);
 
-        let path_isolated = engine
-            .find_graph_path(&id_of("A.md"), &id_of("Insel.md"))
-            .unwrap();
+        let path_isolated = find_shortest_path(&db, &id_of("A.md"), &id_of("Insel.md")).unwrap();
         assert!(!path_isolated.found);
         assert_eq!(path_isolated.hops, 0);
     }

@@ -26,6 +26,102 @@ interface GraphViewProps {
 }
 
 type LocalGraphMode = "global" | "1hop" | "2hop";
+type ThemeMode = "dark" | "light" | "high-contrast";
+
+interface GraphThemePalette {
+  background: string;
+  edgePath: string;
+  edgeHoverAdj: string;
+  edgeSearchAdj: string;
+  edgeDimmedSearch: string;
+  edgeDimmedHover: string;
+  edgeDefault: string;
+  unresolvedFill: string;
+  unresolvedStroke: string;
+  searchStroke: string;
+  activeDocStroke: string;
+  haloPath: string;
+  haloSearch: string;
+  haloActive: string;
+  haloSelected: string;
+  labelSearchMatch: string;
+  labelHighlighted: string;
+  labelDimmed: string;
+  dimmedAlpha: number;
+}
+
+const GRAPH_THEME_PALETTES: Record<ThemeMode, GraphThemePalette> = {
+  dark: {
+    background: "#09090b",
+    edgePath: "#34d399",
+    edgeHoverAdj: "#818cf8",
+    edgeSearchAdj: "rgba(251, 191, 36, 0.45)",
+    edgeDimmedSearch: "rgba(63, 63, 70, 0.14)",
+    edgeDimmedHover: "rgba(63, 63, 70, 0.25)",
+    edgeDefault: "rgba(82, 82, 91, 0.45)",
+    unresolvedFill: "#52525b",
+    unresolvedStroke: "#a1a1aa",
+    searchStroke: "#fbbf24",
+    activeDocStroke: "#38bdf8",
+    haloPath: "rgba(52, 211, 153, 0.28)",
+    haloSearch: "rgba(251, 191, 36, 0.35)",
+    haloActive: "rgba(56, 189, 248, 0.28)",
+    haloSelected: "rgba(129, 140, 248, 0.3)",
+    labelSearchMatch: "#fde68a",
+    labelHighlighted: "#e4e4e7",
+    labelDimmed: "#71717a",
+    dimmedAlpha: 0.18,
+  },
+  light: {
+    background: "#ffffff",
+    edgePath: "#059669",
+    edgeHoverAdj: "#4f46e5",
+    edgeSearchAdj: "rgba(217, 119, 6, 0.55)",
+    edgeDimmedSearch: "rgba(161, 161, 170, 0.18)",
+    edgeDimmedHover: "rgba(161, 161, 170, 0.24)",
+    edgeDefault: "rgba(113, 113, 122, 0.38)",
+    unresolvedFill: "#a1a1aa",
+    unresolvedStroke: "#52525b",
+    searchStroke: "#d97706",
+    activeDocStroke: "#0284c7",
+    haloPath: "rgba(16, 185, 129, 0.24)",
+    haloSearch: "rgba(245, 158, 11, 0.28)",
+    haloActive: "rgba(2, 132, 199, 0.22)",
+    haloSelected: "rgba(79, 70, 229, 0.22)",
+    labelSearchMatch: "#b45309",
+    labelHighlighted: "#18181b",
+    labelDimmed: "#71717a",
+    dimmedAlpha: 0.24,
+  },
+  "high-contrast": {
+    background: "#000000",
+    edgePath: "#34d399",
+    edgeHoverAdj: "#a5b4fc",
+    edgeSearchAdj: "rgba(253, 224, 71, 0.85)",
+    edgeDimmedSearch: "rgba(161, 161, 170, 0.25)",
+    edgeDimmedHover: "rgba(161, 161, 170, 0.35)",
+    edgeDefault: "rgba(228, 228, 231, 0.65)",
+    unresolvedFill: "#71717a",
+    unresolvedStroke: "#ffffff",
+    searchStroke: "#fde047",
+    activeDocStroke: "#38bdf8",
+    haloPath: "rgba(52, 211, 153, 0.4)",
+    haloSearch: "rgba(253, 224, 71, 0.45)",
+    haloActive: "rgba(56, 189, 248, 0.4)",
+    haloSelected: "rgba(165, 180, 252, 0.4)",
+    labelSearchMatch: "#fde047",
+    labelHighlighted: "#ffffff",
+    labelDimmed: "#a1a1aa",
+    dimmedAlpha: 0.28,
+  },
+};
+
+function readThemeMode(): ThemeMode {
+  if (typeof document === "undefined") return "dark";
+  const attr = document.documentElement.getAttribute("data-theme");
+  if (attr === "light" || attr === "high-contrast") return attr;
+  return "dark";
+}
 
 const CLUSTER_COLORS = [
   "#818cf8", // indigo
@@ -51,6 +147,7 @@ export function GraphView({ onOpenDocument, activeDocId }: GraphViewProps) {
   const [fromId, setFromId] = useState("");
   const [toId, setToId] = useState("");
   const [pathResult, setPathResult] = useState<GraphPathResult | null>(null);
+  const [themeMode, setThemeMode] = useState<ThemeMode>(readThemeMode);
 
   // Camera transform + dragged node overrides + layout scaling refs
   const camRef = useRef({ x: 0, y: 0, zoom: 1.0 });
@@ -63,10 +160,47 @@ export function GraphView({ onOpenDocument, activeDocId }: GraphViewProps) {
     lastY: number;
   }>({ mode: "none", lastX: 0, lastY: 0 });
   const positionsRef = useRef<Map<string, { x: number; y: number }>>(new Map());
+  const renderFnRef = useRef<() => void>(() => {});
+  const rafIdRef = useRef<number>(0);
+
+  const scheduleRender = useCallback(() => {
+    if (rafIdRef.current !== 0) return;
+    rafIdRef.current = requestAnimationFrame(() => {
+      rafIdRef.current = 0;
+      renderFnRef.current();
+    });
+  }, []);
 
   useEffect(() => {
-    spacingRef.current = spacing;
-  }, [spacing]);
+    return () => {
+      if (rafIdRef.current !== 0) {
+        cancelAnimationFrame(rafIdRef.current);
+        rafIdRef.current = 0;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    const root = document.documentElement;
+    const syncTheme = () => setThemeMode(readThemeMode());
+    syncTheme();
+    const observer = new MutationObserver(syncTheme);
+    observer.observe(root, {
+      attributes: true,
+      attributeFilter: ["data-theme"],
+    });
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => {
+      scheduleRender();
+    });
+    observer.observe(canvas);
+    return () => observer.disconnect();
+  }, [scheduleRender]);
 
   const getScaledPos = useCallback((nodeId: string) => {
     const p = positionsRef.current.get(nodeId);
@@ -213,14 +347,16 @@ export function GraphView({ onOpenDocument, activeDocId }: GraphViewProps) {
         y: -pos.y * targetZoom,
         zoom: targetZoom,
       };
+      scheduleRender();
     },
-    [getScaledPos, onlyOrphans],
+    [getScaledPos, onlyOrphans, scheduleRender],
   );
 
   const handleZoomToFit = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas || visibleNodes.length === 0) {
       camRef.current = { x: 0, y: 0, zoom: 1.0 };
+      scheduleRender();
       return;
     }
     const rect = canvas.getBoundingClientRect();
@@ -255,11 +391,17 @@ export function GraphView({ onOpenDocument, activeDocId }: GraphViewProps) {
       y: -midY * nextZoom,
       zoom: nextZoom,
     };
-  }, [visibleNodes, getScaledPos]);
+    scheduleRender();
+  }, [visibleNodes, getScaledPos, scheduleRender]);
 
   const handleExportPng = () => {
     const canvas = canvasRef.current;
     if (!canvas) return;
+    if (rafIdRef.current !== 0) {
+      cancelAnimationFrame(rafIdRef.current);
+      rafIdRef.current = 0;
+      renderFnRef.current();
+    }
     const url = canvas.toDataURL("image/png");
     const link = document.createElement("a");
     link.href = url;
@@ -274,28 +416,31 @@ export function GraphView({ onOpenDocument, activeDocId }: GraphViewProps) {
   };
 
   useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas || !snapshot) return;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
+    spacingRef.current = spacing;
 
-    let animId = 0;
     const hasSearch = searchQuery.trim().length > 0;
+    const palette = GRAPH_THEME_PALETTES[themeMode];
 
-    const render = () => {
+    renderFnRef.current = () => {
+      const canvas = canvasRef.current;
+      if (!canvas || !snapshot) return;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return;
+
       const rect = canvas.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return;
+
       const dpr = window.devicePixelRatio || 1;
-      if (
-        canvas.width !== Math.floor(rect.width * dpr) ||
-        canvas.height !== Math.floor(rect.height * dpr)
-      ) {
-        canvas.width = Math.floor(rect.width * dpr);
-        canvas.height = Math.floor(rect.height * dpr);
+      const targetWidth = Math.floor(rect.width * dpr);
+      const targetHeight = Math.floor(rect.height * dpr);
+      if (canvas.width !== targetWidth || canvas.height !== targetHeight) {
+        canvas.width = targetWidth;
+        canvas.height = targetHeight;
       }
 
       ctx.save();
       ctx.scale(dpr, dpr);
-      ctx.fillStyle = "#09090b";
+      ctx.fillStyle = palette.background;
       ctx.fillRect(0, 0, rect.width, rect.height);
 
       const cx = rect.width / 2 + camRef.current.x;
@@ -347,20 +492,20 @@ export function GraphView({ onOpenDocument, activeDocId }: GraphViewProps) {
         ctx.lineTo(p2.x, p2.y);
 
         if (isPath) {
-          ctx.strokeStyle = "#34d399";
+          ctx.strokeStyle = palette.edgePath;
           ctx.lineWidth = 3 / zoom;
         } else if (isHoverAdj) {
-          ctx.strokeStyle = "#818cf8";
+          ctx.strokeStyle = palette.edgeHoverAdj;
           ctx.lineWidth = 2 / zoom;
         } else if (hasSearch) {
           ctx.strokeStyle = isSearchAdj
-            ? "rgba(251, 191, 36, 0.45)"
-            : "rgba(63, 63, 70, 0.14)";
+            ? palette.edgeSearchAdj
+            : palette.edgeDimmedSearch;
           ctx.lineWidth = (isSearchAdj ? 1.5 : 0.9) / zoom;
         } else {
           ctx.strokeStyle = hoveredNode
-            ? "rgba(63, 63, 70, 0.25)"
-            : "rgba(82, 82, 91, 0.45)";
+            ? palette.edgeDimmedHover
+            : palette.edgeDefault;
           ctx.lineWidth = 1.1 / zoom;
         }
         ctx.stroke();
@@ -391,10 +536,10 @@ export function GraphView({ onOpenDocument, activeDocId }: GraphViewProps) {
           node.nodeKind === "tag"
             ? "#10b981"
             : node.nodeKind === "unresolved"
-              ? "#52525b"
+              ? palette.unresolvedFill
               : CLUSTER_COLORS[node.clusterId % CLUSTER_COLORS.length];
 
-        ctx.globalAlpha = isHighlighted ? 1.0 : 0.18;
+        ctx.globalAlpha = isHighlighted ? 1.0 : palette.dimmedAlpha;
 
         if (
           isPath ||
@@ -406,12 +551,12 @@ export function GraphView({ onOpenDocument, activeDocId }: GraphViewProps) {
           ctx.beginPath();
           ctx.arc(p.x, p.y, baseRadius + 4.5 / zoom, 0, Math.PI * 2);
           ctx.fillStyle = isPath
-            ? "rgba(52, 211, 153, 0.28)"
+            ? palette.haloPath
             : isSearchMatch
-              ? "rgba(251, 191, 36, 0.35)"
+              ? palette.haloSearch
               : isActiveDoc && selectedNode?.id !== node.id
-                ? "rgba(56, 189, 248, 0.28)"
-                : "rgba(129, 140, 248, 0.3)";
+                ? palette.haloActive
+                : palette.haloSelected;
           ctx.fill();
         }
 
@@ -421,15 +566,15 @@ export function GraphView({ onOpenDocument, activeDocId }: GraphViewProps) {
         ctx.fill();
 
         if (isSearchMatch) {
-          ctx.strokeStyle = "#fbbf24";
+          ctx.strokeStyle = palette.searchStroke;
           ctx.lineWidth = 2 / zoom;
           ctx.stroke();
         } else if (isActiveDoc) {
-          ctx.strokeStyle = "#38bdf8";
+          ctx.strokeStyle = palette.activeDocStroke;
           ctx.lineWidth = 1.6 / zoom;
           ctx.stroke();
         } else if (node.nodeKind === "unresolved") {
-          ctx.strokeStyle = "#a1a1aa";
+          ctx.strokeStyle = palette.unresolvedStroke;
           ctx.setLineDash([2, 2]);
           ctx.lineWidth = 1;
           ctx.stroke();
@@ -439,32 +584,33 @@ export function GraphView({ onOpenDocument, activeDocId }: GraphViewProps) {
         // Label
         ctx.font = `${Math.max(10, 11 / Math.sqrt(zoom))}px Inter, sans-serif`;
         ctx.fillStyle = isSearchMatch
-          ? "#fde68a"
+          ? palette.labelSearchMatch
           : isHighlighted
-            ? "#e4e4e7"
-            : "#71717a";
+            ? palette.labelHighlighted
+            : palette.labelDimmed;
         ctx.textAlign = "center";
         ctx.fillText(node.label, p.x, p.y + baseRadius + 13 / zoom);
         ctx.globalAlpha = 1.0;
       }
 
       ctx.restore();
-      animId = requestAnimationFrame(render);
     };
 
-    animId = requestAnimationFrame(render);
-    return () => cancelAnimationFrame(animId);
+    scheduleRender();
   }, [
     snapshot,
     visibleNodes,
     visibleEdges,
     hoveredNode,
     selectedNode,
+    activeDocId,
     pathResult,
     searchQuery,
     searchMatchIdSet,
-    activeDocId,
+    spacing,
+    themeMode,
     getScaledPos,
+    scheduleRender,
   ]);
 
   const toWorld = (clientX: number, clientY: number) => {
@@ -714,6 +860,7 @@ export function GraphView({ onOpenDocument, activeDocId }: GraphViewProps) {
               setOnlyOrphans(false);
               setShowUnresolved(true);
               setPathResult(null);
+              scheduleRender();
               void loadGraph(includeTags);
             }}
             className="flex items-center gap-1 rounded-lg border border-zinc-800 bg-zinc-900 px-2.5 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800"
@@ -780,6 +927,7 @@ export function GraphView({ onOpenDocument, activeDocId }: GraphViewProps) {
               camRef.current.y += e.clientY - dragRef.current.lastY;
               dragRef.current.lastX = e.clientX;
               dragRef.current.lastY = e.clientY;
+              scheduleRender();
               return;
             }
             if (dragRef.current.mode === "node" && dragRef.current.nodeId) {
@@ -791,11 +939,15 @@ export function GraphView({ onOpenDocument, activeDocId }: GraphViewProps) {
               }
               dragRef.current.lastX = e.clientX;
               dragRef.current.lastY = e.clientY;
+              scheduleRender();
               return;
             }
 
             const w = toWorld(e.clientX, e.clientY);
-            setHoveredNode(hitTest(w.x, w.y));
+            const nextHovered = hitTest(w.x, w.y);
+            setHoveredNode((prev) =>
+              prev?.id === nextHovered?.id ? prev : nextHovered,
+            );
           }}
           onMouseUp={() => {
             dragRef.current.mode = "none";
@@ -813,6 +965,7 @@ export function GraphView({ onOpenDocument, activeDocId }: GraphViewProps) {
               3.5,
               Math.max(0.25, camRef.current.zoom * factor),
             );
+            scheduleRender();
           }}
         />
 

@@ -2,6 +2,7 @@ import type { Block } from "../types/vault.ts";
 
 export type InlineToken =
   | { type: "text"; text: string }
+  | { type: "imageEmbed"; path: string; alt: string | null }
   | { type: "wikiLink"; target: string; alias: string | null }
   | { type: "blockRef"; blockId: string }
   | { type: "bold"; text: string }
@@ -71,7 +72,51 @@ export function parseInlineTokens(text: string): InlineToken[] {
       }
     }
 
-    // 2. Wiki-Link: [[Target]] or [[Target|Alias]]
+    // 2. Wiki-style image embed: ![[assets/foo.png]] or ![[assets/foo.png|Alt text]]
+    if (ch === "!" && text[i + 1] === "[" && text[i + 2] === "[") {
+      const end = text.indexOf("]]", i + 3);
+      if (end > i + 3) {
+        const inner = text.slice(i + 3, end);
+        if (!inner.includes("\n") && !inner.includes("[")) {
+          const pipeIdx = inner.indexOf("|");
+          const path = (pipeIdx >= 0 ? inner.slice(0, pipeIdx) : inner).trim();
+          const altRaw = pipeIdx >= 0 ? inner.slice(pipeIdx + 1).trim() : "";
+          if (path.length > 0) {
+            tokens.push({
+              type: "imageEmbed",
+              path,
+              alt: altRaw.length > 0 ? altRaw : null,
+            });
+            i = end + 2;
+            continue;
+          }
+        }
+      }
+    }
+
+    // 3. Markdown image embed: ![alt](assets/foo.png) (relative vault paths only)
+    if (ch === "!" && text[i + 1] === "[") {
+      const slice = text.slice(i);
+      const match = /^!\[([^\]\n]*)\]\(([^)\s\n]+)\)/.exec(slice);
+      if (match) {
+        const path = match[2].trim();
+        if (
+          path.length > 0 &&
+          !/^(?:https?:|data:|javascript:)/i.test(path)
+        ) {
+          const altRaw = match[1].trim();
+          tokens.push({
+            type: "imageEmbed",
+            path,
+            alt: altRaw.length > 0 ? altRaw : null,
+          });
+          i += match[0].length;
+          continue;
+        }
+      }
+    }
+
+    // 4. Wiki-Link: [[Target]] or [[Target|Alias]]
     if (ch === "[" && text[i + 1] === "[") {
       const end = text.indexOf("]]", i + 2);
       if (end > i + 2) {
@@ -309,6 +354,14 @@ function renderInlineTokensHtml(text: string): string {
           return `<code class="inline-code">${escapeHtml(tok.text)}</code>`;
         case "wikiLink":
           return `<span class="wiki-link">${escapeHtml(tok.alias ?? tok.target)}</span>`;
+        case "imageEmbed": {
+          const escapedSrc = escapeHtml(tok.path);
+          const escapedAlt = escapeHtml(tok.alt ?? tok.path);
+          const caption = tok.alt
+            ? `<figcaption>${escapeHtml(tok.alt)}</figcaption>`
+            : "";
+          return `<figure class="image-embed"><img src="${escapedSrc}" alt="${escapedAlt}" />${caption}</figure>`;
+        }
         case "blockRef":
           return `<span class="block-ref">((${escapeHtml(tok.blockId)}))</span>`;
         case "externalLink":
@@ -554,6 +607,27 @@ export function renderDocumentToStandaloneHtml(
       border: 0;
       border-top: 1px solid var(--border);
       margin: 1.5rem 0;
+    }
+    .image-embed {
+      margin: 1rem 0;
+      padding: 0.5rem;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      display: inline-block;
+      max-width: 100%;
+    }
+    .image-embed img {
+      display: block;
+      max-width: 100%;
+      height: auto;
+      border-radius: 6px;
+    }
+    .image-embed figcaption {
+      margin-top: 0.4rem;
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-align: center;
     }
   </style>
 </head>

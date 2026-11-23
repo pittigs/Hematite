@@ -71,6 +71,15 @@ pub fn normalize_safe_md_path(vault_path: &Path, raw_rel_path: &str) -> Result<(
     Ok((clean_rel, abs_path))
 }
 
+/// Returns the file stem of a relative path as a `String`, falling back to the input string.
+pub fn path_stem_str(rel_path: &str) -> String {
+    Path::new(rel_path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(rel_path)
+        .to_string()
+}
+
 /// Atomically writes `contents` to `path` via a sibling temporary file and atomic rename.
 /// Prevents partially written or corrupted files during crashes or active cloud syncs.
 pub fn atomic_write(path: &Path, contents: impl AsRef<[u8]>) -> Result<()> {
