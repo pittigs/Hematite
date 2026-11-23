@@ -1,0 +1,85 @@
+{
+  "nodes": [
+    {
+      "id": "node-vault",
+      "nodeType": "doc_embed",
+      "x": 80.0,
+      "y": 90.0,
+      "width": 280.0,
+      "height": 150.0,
+      "title": "Willkommen in OxideVault",
+      "text": "Hybrid-Dokumente + adressierbare Blöcke in Rust & Tauri v2",
+      "refDocPath": "Willkommen in OxideVault.md",
+      "refBlockId": null,
+      "color": "indigo"
+    },
+    {
+      "id": "node-sqlite",
+      "nodeType": "block_embed",
+      "x": 440.0,
+      "y": 60.0,
+      "width": 310.0,
+      "height": 165.0,
+      "title": "SQLite WAL + FTS5 Core",
+      "text": null,
+      "refDocPath": "Architektur & Storage Engine.md",
+      "refBlockId": "blk-sqlite-perf",
+      "color": "emerald"
+    },
+    {
+      "id": "node-crdt",
+      "nodeType": "block_embed",
+      "x": 440.0,
+      "y": 280.0,
+      "width": 310.0,
+      "height": 165.0,
+      "title": "Google-Drive CRDT Sync",
+      "text": null,
+      "refDocPath": "CRDT Google Drive Sync.md",
+      "refBlockId": "blk-crdt-core",
+      "color": "amber"
+    },
+    {
+      "id": "node-ui",
+      "nodeType": "text",
+      "x": 840.0,
+      "y": 170.0,
+      "width": 260.0,
+      "height": 140.0,
+      "title": "Tauri v2 + React 19 UI",
+      "text": "Sub-Millisekunden IPC, 60fps Graph-Rendering, Table & Kanban Database Views",
+      "refDocPath": null,
+      "refBlockId": null,
+      "color": "cyan"
+    }
+  ],
+  "edges": [
+    {
+      "id": "edge-1",
+      "fromNode": "node-vault",
+      "toNode": "node-sqlite",
+      "fromSide": "right",
+      "toSide": "left",
+      "label": "BLAKE3 Index",
+      "color": "emerald"
+    },
+    {
+      "id": "edge-2",
+      "fromNode": "node-vault",
+      "toNode": "node-crdt",
+      "fromSide": "right",
+      "toSide": "left",
+      "label": "Append-Only Oplog",
+      "color": "amber"
+    },
+    {
+      "id": "edge-3",
+      "fromNode": "node-sqlite",
+      "toNode": "node-ui",
+      "fromSide": "right",
+      "toSide": "left",
+      "label": "< 1ms Queries",
+      "color": "cyan"
+    }
+  ]
+}

@@ -1,0 +1,27 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/vault-core",
+    "crates/vault-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["OxideVault Contributors"]
+license = "MIT"
+
+[workspace.dependencies]
+anyhow = "1.0"
+blake3 = "1.5"
+chrono = { version = "0.4", features = ["serde"] }
+notify = "6.1"
+petgraph = "0.6"
+rayon = "1.10"
+rusqlite = { version = "0.32", features = ["serde_json", "vtab"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tempfile = "3.12"
+thiserror = "2.0"
+uuid = { version = "1.10", features = ["v4", "v7", "serde"] }
+walkdir = "2.5"

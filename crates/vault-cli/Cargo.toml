@@ -1,0 +1,13 @@
+[package]
+name = "vault-cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tiny_http = "0.12"
+vault-core = { path = "../vault-core" }
