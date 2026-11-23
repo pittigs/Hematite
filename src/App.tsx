@@ -758,11 +758,17 @@ export function App() {
                   <Sparkles className="h-4 w-4" />
                 </div>
                 <div>
-                  <div className="text-sm font-bold tracking-tight text-zinc-100">
-                    OxideVault
+                  <div className="flex items-center gap-1.5 text-sm font-bold tracking-tight text-zinc-100">
+                    <span>OxideVault</span>
+                    <span
+                      title="Version 0.1.0-alpha.1 (Pre-Release)"
+                      className="rounded-full border border-amber-500/40 bg-amber-500/15 px-1.5 py-0.2 text-[9px] font-semibold uppercase tracking-wide text-amber-300"
+                    >
+                      alpha
+                    </span>
                   </div>
                   <div className="text-[10px] text-zinc-500">
-                    Rust Core • SQLite FTS5
+                    v0.1.0-alpha.1 • SQLite FTS5
                   </div>
                 </div>
               </div>

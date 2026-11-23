@@ -1,0 +1,193 @@
+name: GitHub Alpha / Pre-Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    name: Verify Workspace (Rust + Frontend)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Tauri Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: "npm"
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Run frontend tests
+        run: npm test
+
+      - name: Run Rust workspace tests
+        run: cargo test --workspace
+
+      - name: Check Tauri desktop crate
+        run: cargo check --manifest-path src-tauri/Cargo.toml
+
+  build-cli:
+    name: Build vault-cli (${{ matrix.target_name }})
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target_name: linux-x86_64
+            archive: tar.gz
+          - os: macos-latest
+            target_name: macos-universal
+            archive: tar.gz
+          - os: windows-latest
+            target_name: windows-x86_64
+            archive: zip
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build vault-cli release binary
+        run: cargo build --release -p vault-cli
+
+      - name: Package Unix CLI archive
+        if: matrix.archive == 'tar.gz'
+        shell: bash
+        run: |
+          mkdir -p release-cli
+          TAG="${GITHUB_REF_NAME:-dev}"
+          cp target/release/vault-cli release-cli/
+          cp README.md LICENSE CHANGELOG.md release-cli/
+          tar -czf "vault-cli-${TAG}-${{ matrix.target_name }}.tar.gz" -C release-cli .
+          sha256sum "vault-cli-${TAG}-${{ matrix.target_name }}.tar.gz" > "vault-cli-${TAG}-${{ matrix.target_name }}.tar.gz.sha256"
+
+      - name: Package Windows CLI archive
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path release-cli | Out-Null
+          $Tag = if ($env:GITHUB_REF_NAME) { $env:GITHUB_REF_NAME } else { "dev" }
+          Copy-Item target/release/vault-cli.exe release-cli/
+          Copy-Item README.md, LICENSE, CHANGELOG.md release-cli/
+          $Archive = "vault-cli-$Tag-${{ matrix.target_name }}.zip"
+          Compress-Archive -Path release-cli/* -DestinationPath $Archive
+          $Hash = (Get-FileHash -Algorithm SHA256 $Archive).Hash.ToLower()
+          "$Hash  $Archive" | Out-File -Encoding utf8 "$Archive.sha256"
+
+      - name: Upload CLI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vault-cli-${{ matrix.target_name }}
+          path: |
+            vault-cli-*.tar.gz*
+            vault-cli-*.zip*
+
+  release-desktop:
+    name: Build Tauri Desktop (${{ matrix.os }})
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            args: ""
+          - os: macos-latest
+            args: "--target universal-apple-darwin"
+          - os: windows-latest
+            args: ""
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Tauri Linux system dependencies
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: "npm"
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.os == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build and publish Tauri release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "OxideVault ${{ github.ref_name }}"
+          releaseBodyPath: .github/RELEASE_NOTES_v0.1.0-alpha.1.md
+          releaseDraft: false
+          prerelease: ${{ contains(github.ref_name, '-alpha') || contains(github.ref_name, '-beta') || contains(github.ref_name, '-rc') }}
+          args: ${{ matrix.args }}
+
+      - name: Dry-run Tauri bundle on manual dispatch
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        run: npm run tauri build -- ${{ matrix.args }}
+
+  attach-cli-assets:
+    name: Attach CLI Assets to GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build-cli, release-desktop]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download CLI artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: cli-artifacts
+          merge-multiple: true
+
+      - name: Upload CLI binaries and checksums to Release
+        uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.ref_name }}
+          prerelease: ${{ contains(github.ref_name, '-alpha') || contains(github.ref_name, '-beta') || contains(github.ref_name, '-rc') }}
+          files: cli-artifacts/vault-cli-*

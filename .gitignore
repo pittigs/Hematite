@@ -4,3 +4,4 @@ src-tauri/target/
 dist/
 tsconfig.tsbuildinfo
 graphify-out/.graphify_*
+graphify-out/cache/

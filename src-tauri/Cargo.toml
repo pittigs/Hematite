@@ -1,6 +1,6 @@
 [package]
 name = "oxidevault-desktop"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 description = "OxideVault — Native Rust & Tauri v2 Hybrid Knowledge Graph"
 authors = ["OxideVault Contributors"]
 edition = "2021"
