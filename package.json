@@ -2,6 +2,7 @@
   "name": "oxidevault",
   "private": true,
   "version": "0.1.0-alpha.1",
+  "repository": "https://github.com/pittigs/Hematite",
   "type": "module",
   "scripts": {
     "dev": "vite",

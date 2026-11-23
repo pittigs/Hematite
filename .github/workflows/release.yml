@@ -22,7 +22,13 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             libwebkit2gtk-4.1-dev \
-            libappindicator3-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
             librsvg2-dev \
             patchelf
 
@@ -50,6 +56,28 @@ jobs:
       - name: Check Tauri desktop crate
         run: cargo check --manifest-path src-tauri/Cargo.toml
 
+  create-release:
+    name: Create GitHub Alpha Pre-Release
+    needs: verify
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    outputs:
+      release_id: ${{ steps.gh_release.outputs.id }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Create GitHub Release
+        id: gh_release
+        uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          name: "OxideVault ${{ github.ref_name }}"
+          body_path: .github/RELEASE_NOTES_v0.1.0-alpha.1.md
+          prerelease: ${{ contains(github.ref_name, '-alpha') || contains(github.ref_name, '-beta') || contains(github.ref_name, '-rc') }}
+          draft: false
+
   build-cli:
     name: Build vault-cli (${{ matrix.target_name }})
     needs: verify
@@ -61,7 +89,7 @@ jobs:
             target_name: linux-x86_64
             archive: tar.gz
           - os: macos-latest
-            target_name: macos-universal
+            target_name: macos-arm64
             archive: tar.gz
           - os: windows-latest
             target_name: windows-x86_64
@@ -88,8 +116,13 @@ jobs:
           TAG="${GITHUB_REF_NAME:-dev}"
           cp target/release/vault-cli release-cli/
           cp README.md LICENSE CHANGELOG.md release-cli/
-          tar -czf "vault-cli-${TAG}-${{ matrix.target_name }}.tar.gz" -C release-cli .
-          sha256sum "vault-cli-${TAG}-${{ matrix.target_name }}.tar.gz" > "vault-cli-${TAG}-${{ matrix.target_name }}.tar.gz.sha256"
+          ARCHIVE="vault-cli-${TAG}-${{ matrix.target_name }}.tar.gz"
+          tar -czf "$ARCHIVE" -C release-cli .
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "$ARCHIVE" > "${ARCHIVE}.sha256"
+          else
+            shasum -a 256 "$ARCHIVE" > "${ARCHIVE}.sha256"
+          fi
 
       - name: Package Windows CLI archive
         if: matrix.archive == 'zip'
@@ -114,7 +147,8 @@ jobs:
 
   release-desktop:
     name: Build Tauri Desktop (${{ matrix.os }})
-    needs: verify
+    needs: [verify, create-release]
+    if: always() && needs.verify.result == 'success' && (needs.create-release.result == 'success' || needs.create-release.result == 'skipped')
     strategy:
       fail-fast: false
       matrix:
@@ -136,7 +170,13 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             libwebkit2gtk-4.1-dev \
-            libappindicator3-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
             librsvg2-dev \
             patchelf
 
@@ -148,8 +188,10 @@ jobs:
 
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.os == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - name: Add macOS universal Rust targets
+        if: matrix.os == 'macos-latest'
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
 
       - name: Install frontend dependencies
         run: npm ci
@@ -160,11 +202,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: "OxideVault ${{ github.ref_name }}"
-          releaseBodyPath: .github/RELEASE_NOTES_v0.1.0-alpha.1.md
-          releaseDraft: false
-          prerelease: ${{ contains(github.ref_name, '-alpha') || contains(github.ref_name, '-beta') || contains(github.ref_name, '-rc') }}
+          releaseId: ${{ needs.create-release.outputs.release_id }}
           args: ${{ matrix.args }}
 
       - name: Dry-run Tauri bundle on manual dispatch
@@ -173,8 +211,8 @@ jobs:
 
   attach-cli-assets:
     name: Attach CLI Assets to GitHub Release
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: [build-cli, release-desktop]
+    needs: [create-release, build-cli, release-desktop]
+    if: always() && needs.create-release.result == 'success' && needs.build-cli.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - name: Download CLI artifacts
